@@ -3,18 +3,22 @@ import OpenAI from 'openai';
 
 export async function POST(req: Request) {
   try {
-    // 프론트엔드에서 보낸 텍스트와 API 키를 같이 받습니다.
-    const { text, apiKey } = await req.json();
+    const body = await req.json();
+    const { text, apiKey } = body;
 
     if (!apiKey) {
-      return NextResponse.json({ error: 'API 키가 필요합니다.' }, { status: 400 });
+      return NextResponse.json({ error: 'API 키가 입력되지 않았습니다.' }, { status: 400 });
     }
 
-    // 서버에 저장된 키가 아닌, 방금 유저가 넘겨준 키로 즉석에서 OpenAI를 세팅합니다.
+    if (!text) {
+      return NextResponse.json({ error: '분석할 텍스트가 없습니다.' }, { status: 400 });
+    }
+
+    // 클라이언트에서 넘겨받은 키로 OpenAI 연결
     const openai = new OpenAI({ apiKey: apiKey });
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "gpt-4o", // 비용을 줄이려면 gpt-3.5-turbo 로 변경하셔도 됩니다.
       messages: [
         {
           role: "system",
@@ -29,8 +33,15 @@ export async function POST(req: Request) {
     const data = JSON.parse(content || '{"words": []}');
     
     return NextResponse.json(data.words);
+
   } catch (error: any) {
-    console.error('OpenAI Error:', error);
-    return NextResponse.json({ error: 'AI 분석 실패. API 키가 정확한지 확인해주세요.' }, { status: 500 });
+    console.error('OpenAI API Error:', error.message);
+    
+    // API 키가 틀렸거나 권한이 없을 때의 명확한 에러 처리
+    if (error.status === 401) {
+      return NextResponse.json({ error: '유효하지 않은 API 키입니다. 키를 다시 확인해주세요.' }, { status: 401 });
+    }
+    
+    return NextResponse.json({ error: 'AI 분석 중 서버 오류가 발생했습니다.' }, { status: 500 });
   }
 }
