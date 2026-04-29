@@ -6,10 +6,7 @@ interface Word {
 }
 
 interface Chapter {
-  id: string;
-  date: string;
-  title: string;
-  words: Word[];
+  id: string; date: string; title: string; words: Word[];
 }
 
 const calculateSimilarity = (s1: string, s2: string): number => {
@@ -51,12 +48,23 @@ export default function AIWordMaster() {
   const [isFinished, setIsFinished] = useState(false);
   const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word } | null>(null);
   
+  // 🔥 연속 정답 콤보 상태 추가
+  const [streak, setStreak] = useState(0);
+  
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [newWord, setNewWord] = useState({ en: '', ko: '', pos: 'Noun', phonetics: '' });
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const retryBtnRef = useRef<HTMLButtonElement>(null);
+
+  // 오답 팝업 시 자동으로 '다시하기' 버튼에 포커스 (마우스 0% 사용)
+  useEffect(() => {
+    if (feedback && !feedback.isCorrect) {
+      setTimeout(() => retryBtnRef.current?.focus(), 50);
+    }
+  }, [feedback]);
 
   useEffect(() => {
     const savedData = localStorage.getItem('my_word_storage_v3');
@@ -133,18 +141,30 @@ export default function AIWordMaster() {
     }
     
     setFeedback({ isCorrect, target, word: current });
-    if (isCorrect) setTimeout(() => handleNext(false, true), 800);
+
+    // 정답 시 콤보 증가, 0.8초 후 자동 다음 문제
+    if (isCorrect) {
+      setStreak(s => s + 1);
+      setTimeout(() => handleNext(false, true), 800);
+    } else {
+      setStreak(0); // 틀리면 콤보 박살
+    }
   };
 
   const handleNext = (forceCorrect: boolean, autoCorrect = false) => {
     if (feedback?.isCorrect || forceCorrect) {
+      // 맞춘 단어는 큐에서 영구 삭제 (뽀개기!)
       const remaining = activeWords.slice(1);
       setActiveWords(remaining);
       if (remaining.length === 0) setIsFinished(true);
+      if (forceCorrect) setStreak(s => s + 1);
     } else {
+      // 틀린 단어는 큐의 맨 뒤로 얄짤없이 이동 (무한 반복)
       setActiveWords((prev) => [...prev.slice(1), prev[0]]);
     }
     setFeedback(null); setAnswer('');
+    
+    // 무호흡 입력을 위해 입력창으로 다시 포커스
     if (!autoCorrect) setTimeout(() => inputRef.current?.focus(), 100);
   };
 
@@ -153,6 +173,7 @@ export default function AIWordMaster() {
     const shuffled = [...chapterWords].sort(() => Math.random() - 0.5);
     setActiveWords(shuffled);
     setTotalWordsCount(shuffled.length);
+    setStreak(0);
     setIsFinished(false);
   };
 
@@ -162,6 +183,7 @@ export default function AIWordMaster() {
     const shuffled = [...allWords].sort(() => Math.random() - 0.5);
     setActiveWords(shuffled);
     setTotalWordsCount(shuffled.length);
+    setStreak(0);
     setIsFinished(false);
   };
 
@@ -175,6 +197,7 @@ export default function AIWordMaster() {
   const quitGame = () => {
     setActiveWords([]);
     setTotalWordsCount(0);
+    setStreak(0);
     setIsFinished(false);
     setFeedback(null);
   };
@@ -183,8 +206,8 @@ export default function AIWordMaster() {
     <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
       <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 text-center">
         <div className="text-6xl mb-6">🏆</div>
-        <h2 className="text-2xl font-light mb-10 text-gray-800">모든 학습을 완료했습니다!</h2>
-        <button onClick={quitGame} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest">보관함으로 가기</button>
+        <h2 className="text-2xl font-light mb-10 text-gray-800">모든 단어를 뽀갰습니다!</h2>
+        <button onClick={quitGame} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all">보관함으로 가기</button>
       </div>
     </div>
   );
@@ -199,7 +222,11 @@ export default function AIWordMaster() {
         <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center relative min-h-[550px]">
           <button onClick={quitGame} className="absolute top-8 left-8 text-[10px] text-gray-400 uppercase tracking-widest transition-colors flex items-center gap-1">← QUIT</button>
           
-          {/* 🔥 부활한 진척도(Progress Bar)와 숫자 표기 */}
+          {/* 🔥 콤보 표시기 (듀오링고의 쫄깃함) */}
+          <div className="absolute top-8 right-8 text-sm font-bold text-orange-500 transition-all">
+            {streak >= 3 && `🔥 ${streak} Combo!`}
+          </div>
+          
           <div className="w-full mt-10 mb-8">
             <div className="flex justify-between text-[11px] text-gray-500 font-medium tracking-widest mb-2 uppercase">
               <span>{completedCount} 완료</span>
@@ -211,13 +238,15 @@ export default function AIWordMaster() {
           </div>
           
           <div className="flex w-full max-w-[200px] bg-gray-100 p-1 rounded-xl mb-8">
-            <button onClick={() => setIsEnToKo(true)} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>En → Ko</button>
-            <button onClick={() => setIsEnToKo(false)} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${!isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>Ko → En</button>
+            <button onClick={() => {setIsEnToKo(true); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>En → Ko</button>
+            <button onClick={() => {setIsEnToKo(false); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${!isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>Ko → En</button>
           </div>
 
           <h2 className="text-3xl font-normal mb-2 text-gray-800 text-center leading-snug break-words">
             {isEnToKo ? current.en : current.ko}
           </h2>
+          
+          {/* 🔥 남은 카드 갯수 명시 (타격감) */}
           <p className="text-gray-400 text-sm font-light mb-12">
             {current.phonetics} <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">[{current.pos}]</span>
           </p>
@@ -228,15 +257,43 @@ export default function AIWordMaster() {
               <p className="text-gray-800 font-medium mb-6">{feedback.target}</p>
               {!feedback.isCorrect && (
                 <div className="flex gap-2">
-                  <button onClick={() => handleNext(false)} className="flex-1 bg-gray-900 text-white py-3 rounded-xl text-xs font-light">다시하기</button>
-                  <button onClick={() => handleNext(true)} className="flex-1 bg-white border border-gray-200 text-gray-600 py-3 rounded-xl text-xs font-light">내 답이 맞음 (통과)</button>
+                  <button 
+                    ref={retryBtnRef} // 마우스 없는 Enter 연타를 위한 자동 포커스
+                    onClick={() => handleNext(false)} 
+                    className="flex-1 bg-gray-900 text-white py-3 rounded-xl text-xs font-light hover:bg-gray-800 focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 transition-all outline-none"
+                  >
+                    다시하기 (Enter)
+                  </button>
+                  <button 
+                    onClick={() => handleNext(true)} 
+                    className="flex-1 bg-white border border-gray-200 text-gray-600 py-3 rounded-xl text-xs font-light hover:bg-gray-50 focus:ring-2 focus:ring-gray-200 transition-all outline-none"
+                  >
+                    내 답이 맞음 (통과)
+                  </button>
                 </div>
               )}
             </div>
           ) : (
             <div className="w-full flex flex-col items-center">
-              <input ref={inputRef} className="w-full p-4 border-b border-gray-100 bg-transparent mb-10 text-center text-xl font-light focus:border-gray-800 outline-none transition-colors" value={answer} onChange={(e)=>setAnswer(e.target.value)} onKeyDown={(e)=>e.key==='Enter'&&handleCheck()} placeholder={isEnToKo ? "한국어 뜻 입력" : "영어 스펠링 입력"} autoFocus spellCheck="false" />
-              <button onClick={handleCheck} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all">CHECK</button>
+              <input 
+                ref={inputRef} 
+                className="w-full p-4 border-b border-gray-100 bg-transparent mb-6 text-center text-xl font-light focus:border-gray-800 outline-none transition-colors" 
+                value={answer} 
+                onChange={(e)=>setAnswer(e.target.value)} 
+                onKeyDown={(e)=>e.key==='Enter'&&handleCheck()} 
+                placeholder={isEnToKo ? "한국어 뜻 입력" : "영어 스펠링 입력"} 
+                autoFocus 
+                spellCheck="false" 
+              />
+              <p className="text-[11px] text-gray-400 mb-6 font-medium tracking-wide">
+                남은 단어 카드: <span className="text-gray-800">{activeWords.length}</span> 개
+              </p>
+              <button 
+                onClick={handleCheck} 
+                className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all"
+              >
+                CHECK (Enter)
+              </button>
             </div>
           )}
         </div>
@@ -310,7 +367,7 @@ export default function AIWordMaster() {
                     <p className="text-[11px] text-gray-500 font-medium mt-2 tracking-tighter">{ch.words.length} items</p>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={()=>{playChapter(ch.words)}} className="px-4 py-2 bg-gray-50 text-gray-800 text-[10px] font-bold rounded-lg hover:bg-gray-100">PLAY</button>
+                    <button onClick={()=>{playChapter(ch.words)}} className="px-4 py-2 bg-gray-50 text-gray-800 text-[10px] font-bold rounded-lg hover:bg-gray-100 transition-colors">PLAY</button>
                     <button onClick={()=>{deleteChapter(ch.id)}} className="p-2 text-red-200 hover:text-red-500 transition-colors">
                       <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                     </button>
