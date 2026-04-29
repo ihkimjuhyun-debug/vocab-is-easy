@@ -7,10 +7,15 @@ const openai = new OpenAI({
 
 export async function POST(req: Request) {
   try {
-    const { text } = await req.json();
+    const { text, mode } = await req.json(); // mode: 'word' | 'phrase' | 'both'
 
-    if (!text) {
-      return NextResponse.json({ error: '분석할 텍스트가 없습니다.' }, { status: 400 });
+    let instruction = "";
+    if (mode === 'word') {
+      instruction = "긴 문장보다는 핵심적인 '단어(Vocabulary)' 위주로 20개 이상 추출해 줘.";
+    } else if (mode === 'phrase') {
+      instruction = "단일 단어보다는 숙어, 관용구, 템플릿 등 3단어 이상의 '표현(Expressions/Phrases)' 위주로 20개 이상 추출해라. 짧은 단어만 추출하는 불상사가 없도록 해.";
+    } else {
+      instruction = "단어와 긴 표현을 골고루 섞어서 최대한 많이(25개 이상) 추출해 줘.";
     }
 
     const response = await openai.chat.completions.create({
@@ -18,29 +23,25 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "system",
-          content: `너는 최고 수준의 영어 교육 전문가야. 사용자의 러프한 텍스트에서 학습할 가치가 있는 영단어, 숙어(Idioms), 문장 템플릿을 최대한 많이 추출해 줘.
+          content: `너는 영어 교육 전문가야. 사용자의 노트에서 다음 지시에 따라 학습 카드를 만들어.
           
-          [핵심 추출 규칙]
-          1. '<-', '=', '->' 기호로 연결된 메모가 있다면 우선적으로 한국어 뜻으로 반영해라.
-          2. **[매우 중요] 한국어 뜻은 반드시 해당 품사에 맞는 어미로 끝나야 한다.**
-             - 형용사(Adjective): 반드시 '~한', '~된', '~적인' 으로 끝나야 함 (예: exaggerated -> 과장되다(X) 과장된(O), unlike -> ~와 달리(O))
-             - 동사(Verb): 반드시 '~하다', '~다' 로 끝나야 함
-             - 명사(Noun): 명사형태로 끝날 것
-          3. 문장이나 구문의 경우 품사를 'Phrase' 또는 'Template'으로 명시해라.
-          4. 반드시 { "words": [ { "en": "영어표현", "ko": "한국어 뜻", "pos": "품사/유형", "phonetics": "발음기호" } ] } 형태의 JSON 객체로 반환해라.`
+          [추출 모드: ${mode}]
+          지시사항: ${instruction}
+          
+          [필수 규칙]
+          1. '<-', '=', '->' 기호가 있는 메모는 최우선적으로 정답으로 반영할 것.
+          2. 형용사는 '~한, ~된', 동사는 '~하다' 등 품사에 맞는 한국어 어미를 철저히 지킬 것.
+          3. 표현 모드일 경우 문맥상 중요한 덩어리(Chunks)를 우선순위로 둘 것.
+          4. 반드시 { "words": [ { "en": "영어", "ko": "한국어 뜻(유사어 포함)", "pos": "품사", "phonetics": "발음" } ] } 형태의 JSON으로 반환해.`
         },
         { role: "user", content: text }
       ],
       response_format: { type: "json_object" },
     });
 
-    const content = response.choices[0].message.content;
-    const data = JSON.parse(content || '{"words": []}');
-    
+    const data = JSON.parse(response.choices[0].message.content || '{"words": []}');
     return NextResponse.json(data.words);
-
   } catch (error: any) {
-    console.error('OpenAI API Error:', error.message);
-    return NextResponse.json({ error: 'AI 분석 중 오류가 발생했습니다.' }, { status: 500 });
+    return NextResponse.json({ error: 'AI 분석 실패' }, { status: 500 });
   }
 }
