@@ -18,19 +18,23 @@ export default function AIWordMaster() {
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   
+  // 영구 스토리지 상태
   const [chapters, setChapters] = useState<Chapter[]>([]);
   
+  // 게임 진행 상태
   const [activeWords, setActiveWords] = useState<Word[]>([]);
   const [answer, setAnswer] = useState('');
   const [isEnToKo, setIsEnToKo] = useState(true);
   
-  // 💡 새롭게 추가된 상태: 총 단어 수와 완료 여부 추적
+  // 진행도 및 축하 화면 상태
   const [totalWordsCount, setTotalWordsCount] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
   
+  // 관리자 모드
   const [isAdminMode, setIsAdminMode] = useState(false);
-  const [newWord, setNewWord] = useState({ en: '', ko: '', pos: 'Noun', phonetics: '' });
+  const [newWord, setNewWord] = useState({ en: '', ko: '', pos: 'Phrase', phonetics: '' });
 
+  // 컴포넌트 마운트 시 저장소 불러오기
   useEffect(() => {
     const savedData = localStorage.getItem('my_word_storage');
     if (savedData) {
@@ -38,6 +42,7 @@ export default function AIWordMaster() {
     }
   }, []);
 
+  // 저장소 업데이트 함수
   const saveToStorage = (newChapters: Chapter[]) => {
     setChapters(newChapters);
     localStorage.setItem('my_word_storage', JSON.stringify(newChapters));
@@ -53,6 +58,7 @@ export default function AIWordMaster() {
     return `${year}-${month}-${day} ${hours}:${minutes}`;
   };
 
+  // 1. AI 텍스트 분석 및 챕터 자동 저장
   const startAIAnalysis = async () => {
     if (!text.trim()) return alert('노트 내용을 입력해주세요!');
     
@@ -64,20 +70,20 @@ export default function AIWordMaster() {
         body: JSON.stringify({ text }),
       });
       
-      if (!res.ok) throw new Error('서버 통신 오류');
+      if (!res.ok) throw new Error('서버 오류');
       
       const data: Word[] = await res.json();
       if (data && data.length > 0) {
         const timeStamp = getFormattedDate();
         const newChapter: Chapter = {
           id: Date.now().toString(),
-          title: `${timeStamp} 추출된 단어장`,
+          title: `${timeStamp} 추출된 표현들`,
           words: data
         };
         
         saveToStorage([newChapter, ...chapters]);
         setText('');
-        alert(`${data.length}개의 단어가 새로운 챕터로 저장되었습니다!`);
+        alert(`대성공! 무려 ${data.length}개의 단어와 표현이 챕터로 저장되었습니다!`);
       } else {
         alert('추출할 수 있는 단어가 없습니다.');
       }
@@ -88,6 +94,7 @@ export default function AIWordMaster() {
     }
   };
 
+  // 2. 관리자 수동 추가
   const handleAddWord = () => {
     if (!newWord.en || !newWord.ko) return alert('영어와 한국어 뜻은 필수입니다.');
     if (chapters.length === 0) return alert('먼저 AI 추출을 통해 챕터를 생성해주세요.');
@@ -96,10 +103,11 @@ export default function AIWordMaster() {
     updatedChapters[0].words.push(newWord); 
     
     saveToStorage(updatedChapters);
-    setNewWord({ en: '', ko: '', pos: 'Noun', phonetics: '' });
+    setNewWord({ en: '', ko: '', pos: 'Phrase', phonetics: '' });
     alert('가장 최근 단어장에 수동으로 추가되었습니다.');
   };
 
+  // 3. 게임 채점 로직 (무한 큐)
   const handleCheck = () => {
     if (activeWords.length === 0 || !answer.trim()) return;
     
@@ -113,12 +121,11 @@ export default function AIWordMaster() {
       const remaining = activeWords.slice(1);
       setActiveWords(remaining);
       
-      // 💡 마지막 단어를 맞췄을 때 완료 화면 띄우기
       if (remaining.length === 0) {
         setIsFinished(true);
       }
     } else {
-      alert(`❌ 오답입니다. 정답은 [ ${target} ] 입니다.\n큐의 맨 뒤에서 다시 출제됩니다.`);
+      alert(`❌ 오답입니다. 정답은 [ ${target} ] 입니다.\n해당 표현은 계속 다시 출제됩니다.`);
       setActiveWords((prev) => {
         const failedWord = prev[0];
         return [...prev.slice(1), failedWord];
@@ -127,7 +134,7 @@ export default function AIWordMaster() {
     setAnswer('');
   };
 
-  // 💡 게임 시작 시 총 단어 수를 기록
+  // 4. 학습 시작 함수 (랜덤 셔플)
   const playChapter = (chapterWords: Word[]) => {
     if (chapterWords.length === 0) return alert('이 챕터에는 단어가 없습니다.');
     const shuffled = [...chapterWords].sort(() => Math.random() - 0.5);
@@ -163,14 +170,14 @@ export default function AIWordMaster() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
         <div className="w-full max-w-md p-10 bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center text-center">
-          <div className="text-5xl mb-6">🎉</div>
-          <h2 className="text-2xl font-normal text-gray-800 mb-2 tracking-tight">축하합니다!</h2>
-          <p className="text-gray-500 font-light mb-10 leading-relaxed">
-            오늘의 단어 <span className="font-medium text-gray-800">{totalWordsCount}</span>개를<br/>전부 완료하셨습니다.
+          <div className="text-6xl mb-6 animate-bounce">🏆</div>
+          <h2 className="text-3xl font-light text-gray-800 mb-3 tracking-tight">수고하셨습니다!</h2>
+          <p className="text-gray-500 font-light mb-10 leading-relaxed text-lg">
+            총 <span className="font-medium text-gray-800">{totalWordsCount}</span>개의 표현을<br/>완벽하게 마스터하셨습니다.
           </p>
           <button 
             onClick={quitGame}
-            className="w-full bg-gray-900 text-white py-4 rounded-xl font-light tracking-wider hover:bg-gray-800 transition-all active:scale-[0.98]"
+            className="w-full bg-gray-900 text-white py-5 rounded-xl font-light tracking-widest hover:bg-gray-800 transition-all active:scale-[0.98]"
           >
             보관함으로 돌아가기
           </button>
@@ -192,10 +199,9 @@ export default function AIWordMaster() {
             onClick={quitGame}
             className="absolute top-6 left-6 text-[10px] text-gray-400 hover:text-gray-600 uppercase tracking-widest transition-colors flex items-center gap-1"
           >
-            ← 종료
+            ← 학습 종료
           </button>
 
-          {/* 💡 진척도(Progress Bar) 영역 */}
           <div className="w-full mt-6 mb-8">
             <div className="flex justify-between text-[10px] text-gray-400 uppercase tracking-widest mb-2 font-light">
               <span>{totalWordsCount - activeWords.length} completed</span>
@@ -213,13 +219,15 @@ export default function AIWordMaster() {
             {isEnToKo ? "Translate to Korean" : "Type in English"}
           </p>
           
-          <h2 className="text-4xl font-normal mb-3 text-gray-800 break-words text-center">
+          <h2 className="text-3xl sm:text-4xl font-normal mb-3 text-gray-800 break-words text-center leading-tight">
             {isEnToKo ? current.en : current.ko}
           </h2>
           
           <div className="flex items-center gap-2 mb-10 text-gray-400 font-light">
             <span className="text-sm">{current.phonetics}</span>
-            <span className="text-[10px] uppercase border border-gray-200 px-2 py-0.5 rounded-full">{current.pos}</span>
+            <span className={`text-[10px] uppercase border px-2 py-0.5 rounded-full ${current.pos === 'Phrase' || current.pos === 'Template' ? 'border-blue-200 text-blue-500 bg-blue-50' : 'border-gray-200'}`}>
+              {current.pos}
+            </span>
           </div>
           
           <input 
@@ -258,13 +266,13 @@ export default function AIWordMaster() {
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-2xl font-light text-gray-800 tracking-tight">AI Word Master</h1>
-            <p className="text-gray-400 mt-1 font-light text-sm">추출된 단어는 기기에 영구적으로 자동 보관됩니다.</p>
+            <p className="text-gray-400 mt-1 font-light text-sm">구문과 템플릿까지 완벽하게 추출하여 영구 보관합니다.</p>
           </div>
           <button 
             onClick={() => setIsAdminMode(!isAdminMode)}
             className={`text-xs px-4 py-2 border rounded-full transition-colors font-light tracking-wide ${isAdminMode ? 'bg-gray-800 text-white border-gray-800' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}
           >
-            {isAdminMode ? '보관함으로 돌아가기' : '관리자 모드'}
+            {isAdminMode ? '보관함으로 가기' : '관리자 모드'}
           </button>
         </div>
 
@@ -274,7 +282,7 @@ export default function AIWordMaster() {
             <div className="grid grid-cols-2 gap-4 mb-4">
               <input placeholder="영어 (필수)" value={newWord.en} onChange={e => setNewWord({...newWord, en: e.target.value})} className="p-3 rounded-lg border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
               <input placeholder="한국어 뜻 (필수)" value={newWord.ko} onChange={e => setNewWord({...newWord, ko: e.target.value})} className="p-3 rounded-lg border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
-              <input placeholder="품사 (예: Noun)" value={newWord.pos} onChange={e => setNewWord({...newWord, pos: e.target.value})} className="p-3 rounded-lg border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
+              <input placeholder="유형 (예: Phrase, Noun)" value={newWord.pos} onChange={e => setNewWord({...newWord, pos: e.target.value})} className="p-3 rounded-lg border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
               <input placeholder="발음 기호" value={newWord.phonetics} onChange={e => setNewWord({...newWord, phonetics: e.target.value})} className="p-3 rounded-lg border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
             </div>
             <button onClick={handleAddWord} className="w-full bg-blue-600 text-white py-3 rounded-lg text-sm font-light tracking-wide hover:bg-blue-700 transition-colors">최근 챕터에 추가하기</button>
@@ -292,7 +300,7 @@ export default function AIWordMaster() {
           disabled={loading}
           className="w-full bg-gray-900 text-white py-4 rounded-xl font-light tracking-wider hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-400 transition-all active:scale-[0.99] flex justify-center items-center mb-12"
         >
-          {loading ? "분석 및 저장 중..." : "AI 추출 및 챕터 저장"}
+          {loading ? "표현들을 긁어모으는 중..." : "AI 추출 및 챕터 저장"}
         </button>
 
         <div className="border-t border-gray-100 pt-8">
@@ -303,7 +311,7 @@ export default function AIWordMaster() {
                 onClick={playAllWords}
                 className="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
               >
-                전체 단어 복습하기
+                누적된 전체 단어 복습하기
               </button>
             )}
           </div>
@@ -316,7 +324,7 @@ export default function AIWordMaster() {
                 <div key={chapter.id} className="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-xl hover:border-gray-300 transition-colors">
                   <div>
                     <h3 className="text-sm font-medium text-gray-800">{chapter.title}</h3>
-                    <p className="text-xs text-gray-400 mt-1 font-light">단어 {chapter.words.length}개</p>
+                    <p className="text-xs text-gray-400 mt-1 font-light">표현 {chapter.words.length}개</p>
                   </div>
                   <div className="flex gap-2">
                     <button 
