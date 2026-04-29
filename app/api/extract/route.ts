@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
+// 🔥 Vercel의 기본 타임아웃(10초)을 최대 60초로 연장하는 마법의 코드! (대량 추출 시 필수)
+export const maxDuration = 60; 
+export const dynamic = 'force-dynamic';
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY, 
 });
@@ -34,17 +38,18 @@ export async function POST(req: Request) {
           [형식 규칙]
           1. 사용자가 'n. 경고문', 'v. 물을 주다' 처럼 품사 약어(n, v, adj, adv 등)를 포함해 적었다면, 'ko'(한국어 뜻) 필드에는 '경고문', '물을 주다' 만 남기고 약어는 지워라. 대신 'pos'(품사) 필드에 해당 품사(Noun, Verb, Adjective 등)를 명확히 기재해라.
           2. 형용사는 '~한, ~된', 동사는 '~하다, ~다' 로 어미를 일치시킬 것.
-          3. 반드시 { "words": [ { "en": "영어", "ko": "한국어 뜻 여러개(콤마로 구분)", "pos": "품사", "phonetics": "발음" } ] } 형태의 JSON으로 반환해라.`
+          3. 반드시 { "words": [ { "en": "영어", "ko": "한국어 뜻 여러개(콤마로 구분)", "pos": "품사", "phonetics": "발음기호" } ] } 형태의 JSON으로 반환해라.`
         },
         { role: "user", content: text }
       ],
       response_format: { type: "json_object" },
-      max_tokens: 4000, // 대량의 단어를 추출하기 위해 토큰 한도를 최대로 늘림
+      max_tokens: 4000, // 150개 이상의 대용량 텍스트 출력을 위한 토큰 최대치 개방
     });
 
     const data = JSON.parse(response.choices[0].message.content || '{"words": []}');
     return NextResponse.json(data.words);
   } catch (error: any) {
+    console.error('OpenAI API Error:', error);
     return NextResponse.json({ error: 'AI 분석 실패' }, { status: 500 });
   }
 }
