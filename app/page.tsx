@@ -237,8 +237,11 @@ export default function AIWordMaster() {
 
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
-    const completedCount = totalWordsCount - activeWords.length;
-    const progress = (completedCount / totalWordsCount) * 100;
+    
+    // 🔥 타격감 핵심: '현재 정답 처리 중'인 단어도 즉시 진행도에 반영하여 기다림 없이 바로 차오르게 만듦
+    const isJustCorrect = feedback?.isCorrect; 
+    const completedCount = totalWordsCount - activeWords.length + (isJustCorrect ? 1 : 0);
+    const progress = totalWordsCount > 0 ? (completedCount / totalWordsCount) * 100 : 0;
     
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
@@ -249,14 +252,23 @@ export default function AIWordMaster() {
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
           
-          {/* 🔥 업데이트된 실시간 퍼센테이지(%) 및 진척도 표기 */}
+          {/* 🔥 소수점 첫째 자리까지 세밀하게 차오르는 게이지 UI */}
           <div className="w-full mt-10 mb-8">
             <div className="flex justify-between items-end text-[11px] text-gray-500 font-medium tracking-widest mb-2 uppercase">
               <span>{completedCount} / {totalWordsCount} 완료</span>
-              <span className="text-sm font-bold text-gray-800">{Math.floor(progress)}%</span>
+              {/* 0.6% 처럼 즉각적으로 올라가는 퍼센트 */}
+              <span className="text-sm font-bold text-gray-800 transition-all duration-300">
+                {progress.toFixed(1)}%
+              </span>
             </div>
-            <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
-              <div className="bg-gray-800 h-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }}></div>
+            <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden relative shadow-inner">
+              <div 
+                className="bg-gray-800 h-full transition-all duration-500 ease-out relative" 
+                style={{ width: `${progress}%` }}
+              >
+                {/* 게이지 바 끝부분이 묘하게 빛나는 듀오링고식 효과 */}
+                <div className="absolute top-0 right-0 bottom-0 w-4 bg-white opacity-25 blur-[2px]"></div>
+              </div>
             </div>
           </div>
           
@@ -307,6 +319,9 @@ export default function AIWordMaster() {
                 autoFocus 
                 spellCheck="false" 
               />
+              <p className="text-[11px] text-gray-400 mb-6 font-medium tracking-wide">
+                남은 단어 카드: <span className="text-gray-800">{totalWordsCount - completedCount}</span> 개
+              </p>
               <button 
                 onClick={handleCheck} 
                 className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all"
@@ -320,6 +335,7 @@ export default function AIWordMaster() {
     );
   }
 
+  // 메인 텍스트 입력 화면
   return (
     <div className="flex flex-col items-center min-h-screen p-6 bg-[#fafafa] pt-16">
       <div className="w-full max-w-2xl bg-white p-10 rounded-[2rem] shadow-sm border border-gray-100">
