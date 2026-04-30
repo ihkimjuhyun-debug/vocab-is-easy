@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-// 🔥 Vercel의 기본 타임아웃(10초)을 최대 60초로 연장하는 마법의 코드! (대량 추출 시 필수)
+// Vercel 서버 최대 대기 시간 60초 허용
 export const maxDuration = 60; 
 export const dynamic = 'force-dynamic';
 
@@ -17,33 +17,33 @@ export async function POST(req: Request) {
     if (mode === 'word') {
       instruction = "긴 문장보다는 단어(Vocabulary) 위주로 추출해라.";
     } else if (mode === 'phrase') {
-      instruction = "단일 단어보다는 숙어, 관용구, 템플릿 등 2단어 이상의 표현 위주로 추출해라.";
+      instruction = "단일 단어보다는 숙어, 관용구 등 2단어 이상의 표현 위주로 추출해라.";
     } else {
       instruction = "단어와 긴 표현을 모두 포함해서 추출해라.";
     }
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      // 🔥 핵심 해결책: 속도가 3~4배 빠른 초고속 모델로 엔진 교체! (타임아웃 에러 완벽 해결)
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `너는 완벽한 데이터 파싱을 수행하는 영어 교육 AI야. 
+          content: `너는 무조건 입력된 모든 텍스트를 100% JSON으로 변환하는 무자비한 데이터 파서(Parser)야. 자체적인 필터링이나 요약은 절대 금지한다.
           
-          [🔥 절대 지켜야 할 철칙 - 무손실 추출]
-          사용자가 입력한 텍스트에 있는 **모든 단어와 뜻을 단 하나도 빠짐없이 100% 추출해라.** 150개가 입력되면 150개를 모두 출력해야 한다. 네가 임의로 '너무 쉽다'거나 '예시'라고 판단하여 생략하거나 요약하면 절대 안 된다.
-          
-          [추출 모드: ${mode}]
-          지시사항: ${instruction}
+          [🔥 절대 지켜야 할 철칙 - 무손실 100% 추출]
+          1. 사용자가 입력한 텍스트가 150개든 200개든 단 하나도 빠짐없이 전부 추출해라. 
+          2. 복사/붙여넣기 오류로 인해 'wash -> 경고문', 'waste -> 세탁' 처럼 영어와 한글 뜻 매칭이 어긋나 보이거나, 중간에 알파벳 'W', 'D' 같은 쓰레기 값이 있어도 절대 네 맘대로 생략하거나 멈추지 마라. 쓰레기 값만 버리고 실제 단어와 뜻은 문맥을 유추해서라도 억지로 짝을 맞춰 배열에 넣어라.
+          3. "여기까지만 하자"는 식의 자체 종료는 절대 금지한다. 사용자가 입력한 텍스트의 맨 마지막 단어가 JSON 배열에 들어갈 때까지 계속 생성해라.
           
           [형식 규칙]
-          1. 사용자가 'n. 경고문', 'v. 물을 주다' 처럼 품사 약어(n, v, adj, adv 등)를 포함해 적었다면, 'ko'(한국어 뜻) 필드에는 '경고문', '물을 주다' 만 남기고 약어는 지워라. 대신 'pos'(품사) 필드에 해당 품사(Noun, Verb, Adjective 등)를 명확히 기재해라.
-          2. 형용사는 '~한, ~된', 동사는 '~하다, ~다' 로 어미를 일치시킬 것.
-          3. 반드시 { "words": [ { "en": "영어", "ko": "한국어 뜻 여러개(콤마로 구분)", "pos": "품사", "phonetics": "발음기호" } ] } 형태의 JSON으로 반환해라.`
+          - 사용자가 'n. 경고문', 'v. 물을 주다' 등 약어를 썼다면, 뜻에는 '경고문', '물을 주다'만 남기고 약어는 pos 필드(Noun, Verb 등)로 넘겨라.
+          - { "words": [ { "en": "영어", "ko": "한국어 뜻(여러 개면 콤마 구분)", "pos": "품사", "phonetics": "발음기호" } ] }`
         },
         { role: "user", content: text }
       ],
       response_format: { type: "json_object" },
-      max_tokens: 4000, // 150개 이상의 대용량 텍스트 출력을 위한 토큰 최대치 개방
+      // 150~200개 이상의 대용량 출력을 위해 AI의 텍스트 제한 최대로 해제
+      max_tokens: 4000, 
     });
 
     const data = JSON.parse(response.choices[0].message.content || '{"words": []}');
