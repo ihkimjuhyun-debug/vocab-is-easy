@@ -36,18 +36,18 @@ const calculateSimilarity = (s1: string, s2: string): number => {
 export default function AIWordMaster() {
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [analyzingProgress, setAnalyzingProgress] = useState(0);
+  const [totalChunks, setTotalChunks] = useState(0);
+  
   const [extractMode, setExtractMode] = useState<'word' | 'phrase' | 'both'>('both');
   
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [activeWords, setActiveWords] = useState<Word[]>([]);
   const [answer, setAnswer] = useState('');
-  
   const [isEnToKo, setIsEnToKo] = useState(true);
-  
   const [totalWordsCount, setTotalWordsCount] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
   const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word } | null>(null);
-  
   const [streak, setStreak] = useState(0);
   
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -65,13 +65,13 @@ export default function AIWordMaster() {
   }, [feedback]);
 
   useEffect(() => {
-    const savedData = localStorage.getItem('my_word_storage_v5');
+    const savedData = localStorage.getItem('my_word_storage_v6');
     if (savedData) setChapters(JSON.parse(savedData));
   }, []);
 
   const saveToStorage = (newChapters: Chapter[]) => {
     setChapters(newChapters);
-    localStorage.setItem('my_word_storage_v5', JSON.stringify(newChapters));
+    localStorage.setItem('my_word_storage_v6', JSON.stringify(newChapters));
   };
 
   const getFormattedDate = () => {
@@ -82,29 +82,56 @@ export default function AIWordMaster() {
   const startAIAnalysis = async () => {
     if (!text.trim()) return alert('내용을 입력해주세요!');
     setLoading(true);
+    setAnalyzingProgress(0);
+    
     try {
-      const res = await fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, mode: extractMode }),
-      });
-      const data: Word[] = await res.json();
-      if (data && data.length > 0) {
+      const lines = text.split('\n');
+      const chunkSize = 40; 
+      const chunks = [];
+      for (let i = 0; i < lines.length; i += chunkSize) {
+        chunks.push(lines.slice(i, i + chunkSize).join('\n'));
+      }
+      
+      setTotalChunks(chunks.length);
+      let allExtractedWords: Word[] = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        setAnalyzingProgress(i + 1);
+        const res = await fetch('/api/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: chunks[i], mode: extractMode }),
+        });
+        
+        if (!res.ok) throw new Error('서버 통신 실패');
+        
+        const data: Word[] = await res.json();
+        if (data && data.length > 0) {
+          allExtractedWords = [...allExtractedWords, ...data];
+        }
+      }
+
+      if (allExtractedWords.length > 0) {
         const dateStr = getFormattedDate();
         const newChapter: Chapter = {
           id: Date.now().toString(),
           date: dateStr,
           title: `${extractMode === 'phrase' ? '표현' : extractMode === 'word' ? '단어' : '복합'} 꾸러미`,
-          words: data
+          words: allExtractedWords
         };
         saveToStorage([newChapter, ...chapters]);
         setText('');
-        alert(`완벽합니다! 누락 없이 총 ${data.length}개의 항목이 저장되었습니다!`);
+        alert(`제한을 완벽히 뚫었습니다! 총 ${allExtractedWords.length}개의 항목이 복구 및 저장되었습니다!`);
       } else {
-        alert('추출에 실패했습니다. 올바른 텍스트인지 확인해주세요.');
+        alert('추출할 텍스트를 찾지 못했습니다.');
       }
-    } catch (e) { alert('데이터를 추출하는 중 서버와 연결이 끊어졌습니다. 다시 시도해주세요.'); }
-    finally { setLoading(false); }
+    } catch (e) { 
+      alert('분석 중 오류가 발생했습니다.'); 
+    } finally { 
+      setLoading(false); 
+      setAnalyzingProgress(0);
+      setTotalChunks(0);
+    }
   };
 
   const handleRename = (id: string) => {
@@ -114,13 +141,13 @@ export default function AIWordMaster() {
   };
 
   const handleAddWord = () => {
-    if (!newWord.en || !newWord.ko) return alert('영어와 한국어 뜻은 필수입니다.');
-    if (chapters.length === 0) return alert('먼저 AI 추출을 통해 챕터를 생성해주세요.');
+    if (!newWord.en || !newWord.ko) return alert('필수 항목을 적어주세요.');
+    if (chapters.length === 0) return alert('먼저 챕터를 생성해주세요.');
     const updatedChapters = [...chapters];
     updatedChapters[0].words.push(newWord); 
     saveToStorage(updatedChapters);
     setNewWord({ en: '', ko: '', pos: 'Noun', phonetics: '' });
-    alert('수동으로 추가되었습니다.');
+    alert('추가되었습니다.');
   };
 
   const handleCheck = () => {
@@ -184,7 +211,7 @@ export default function AIWordMaster() {
   };
 
   const deleteChapter = (id: string) => {
-    if (confirm('이 단어장 챕터를 정말 삭제하시겠습니까?')) {
+    if (confirm('삭제하시겠습니까?')) {
       const filtered = chapters.filter(ch => ch.id !== id);
       saveToStorage(filtered);
     }
@@ -222,10 +249,11 @@ export default function AIWordMaster() {
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
           
+          {/* 🔥 업데이트된 실시간 퍼센테이지(%) 및 진척도 표기 */}
           <div className="w-full mt-10 mb-8">
-            <div className="flex justify-between text-[11px] text-gray-500 font-medium tracking-widest mb-2 uppercase">
-              <span>{completedCount} 완료</span>
-              <span>총 {totalWordsCount}개</span>
+            <div className="flex justify-between items-end text-[11px] text-gray-500 font-medium tracking-widest mb-2 uppercase">
+              <span>{completedCount} / {totalWordsCount} 완료</span>
+              <span className="text-sm font-bold text-gray-800">{Math.floor(progress)}%</span>
             </div>
             <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
               <div className="bg-gray-800 h-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }}></div>
@@ -279,9 +307,6 @@ export default function AIWordMaster() {
                 autoFocus 
                 spellCheck="false" 
               />
-              <p className="text-[11px] text-gray-400 mb-6 font-medium tracking-wide">
-                남은 단어 카드: <span className="text-gray-800">{activeWords.length}</span> 개
-              </p>
               <button 
                 onClick={handleCheck} 
                 className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all"
@@ -301,11 +326,11 @@ export default function AIWordMaster() {
         <div className="flex justify-between items-start mb-10">
           <div>
             <h1 className="text-2xl font-normal text-gray-800 tracking-tight">AI Word Master</h1>
-            <p className="text-gray-400 mt-1 font-light text-sm">노트를 붙여넣으면 초고속으로 100% 추출합니다.</p>
+            <p className="text-gray-400 mt-1 font-light text-sm">Vercel 제한을 우회하는 분할 전송 시스템이 탑재되었습니다.</p>
           </div>
           <div className="flex flex-col items-end gap-3">
             <button onClick={() => setIsAdminMode(!isAdminMode)} className={`text-[10px] px-3 py-1.5 border rounded-md transition-colors font-light tracking-wide ${isAdminMode ? 'bg-gray-800 text-white border-gray-800' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
-              {isAdminMode ? '보관함으로 가기' : '관리자 수동 추가 모드'}
+              {isAdminMode ? '보관함으로 가기' : '관리자 추가 모드'}
             </button>
             <div className="flex bg-gray-50 p-1 rounded-xl border border-gray-100">
               {(['word', 'phrase', 'both'] as const).map(m => (
@@ -319,7 +344,7 @@ export default function AIWordMaster() {
 
         {isAdminMode && (
           <div className="mb-8 p-6 bg-gray-50 rounded-2xl border border-gray-200">
-            <h3 className="text-sm font-medium text-gray-700 mb-4 tracking-wide">수동 단어 추가 (최근 챕터에 저장)</h3>
+            <h3 className="text-sm font-medium text-gray-700 mb-4 tracking-wide">수동 단어 추가</h3>
             <div className="grid grid-cols-2 gap-4 mb-4">
               <input placeholder="영어 (필수)" value={newWord.en} onChange={e => setNewWord({...newWord, en: e.target.value})} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
               <input placeholder="한국어 뜻 (필수)" value={newWord.ko} onChange={e => setNewWord({...newWord, ko: e.target.value})} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
@@ -330,9 +355,10 @@ export default function AIWordMaster() {
           </div>
         )}
 
-        <textarea className="w-full h-56 p-6 bg-gray-50 border border-gray-100 rounded-2xl mb-6 focus:border-gray-300 outline-none resize-none text-gray-700 font-light leading-relaxed" placeholder="여기에 100개든 200개든 공부한 내용을 복사해서 붙여넣으세요..." value={text} onChange={(e)=>setText(e.target.value)} />
-        <button onClick={startAIAnalysis} disabled={loading} className="w-full bg-gray-900 text-white py-5 rounded-2xl font-light tracking-[0.2em] hover:bg-gray-800 disabled:bg-gray-100 transition-all mb-16">
-          {loading ? "빛의 속도로 단어장 생성 중..." : "GENERATE CHAPTER"}
+        <textarea className="w-full h-56 p-6 bg-gray-50 border border-gray-100 rounded-2xl mb-6 focus:border-gray-300 outline-none resize-none text-gray-700 font-light leading-relaxed" placeholder="여기에 100개든 200개든 공부한 내용을 냅다 꽂아주세요..." value={text} onChange={(e)=>setText(e.target.value)} />
+        
+        <button onClick={startAIAnalysis} disabled={loading} className="w-full bg-gray-900 text-white py-5 rounded-2xl font-light tracking-[0.2em] hover:bg-gray-800 disabled:bg-gray-400 transition-all mb-16">
+          {loading ? (totalChunks > 0 ? `쪼개서 분석 중... (${analyzingProgress}/${totalChunks})` : "단어장 생성 중...") : "GENERATE CHAPTER"}
         </button>
 
         <div className="border-t border-gray-50 pt-10">
@@ -369,7 +395,6 @@ export default function AIWordMaster() {
                 </div>
               </div>
             ))}
-            {chapters.length === 0 && <p className="text-center text-gray-400 font-light py-10 text-sm">저장된 단어장이 없습니다.</p>}
           </div>
         </div>
       </div>
