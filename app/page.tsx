@@ -48,7 +48,6 @@ export default function AIWordMaster() {
   const [isFinished, setIsFinished] = useState(false);
   const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word } | null>(null);
   
-  // 🔥 연속 정답 콤보 상태 추가
   const [streak, setStreak] = useState(0);
   
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -59,7 +58,6 @@ export default function AIWordMaster() {
   const inputRef = useRef<HTMLInputElement>(null);
   const retryBtnRef = useRef<HTMLButtonElement>(null);
 
-  // 오답 팝업 시 자동으로 '다시하기' 버튼에 포커스 (마우스 0% 사용)
   useEffect(() => {
     if (feedback && !feedback.isCorrect) {
       setTimeout(() => retryBtnRef.current?.focus(), 50);
@@ -67,13 +65,13 @@ export default function AIWordMaster() {
   }, [feedback]);
 
   useEffect(() => {
-    const savedData = localStorage.getItem('my_word_storage_v3');
+    const savedData = localStorage.getItem('my_word_storage_v5');
     if (savedData) setChapters(JSON.parse(savedData));
   }, []);
 
   const saveToStorage = (newChapters: Chapter[]) => {
     setChapters(newChapters);
-    localStorage.setItem('my_word_storage_v3', JSON.stringify(newChapters));
+    localStorage.setItem('my_word_storage_v5', JSON.stringify(newChapters));
   };
 
   const getFormattedDate = () => {
@@ -101,9 +99,11 @@ export default function AIWordMaster() {
         };
         saveToStorage([newChapter, ...chapters]);
         setText('');
-        alert(`완벽합니다! 누락 없이 총 ${data.length}개의 단어가 저장되었습니다!`);
+        alert(`완벽합니다! 누락 없이 총 ${data.length}개의 항목이 저장되었습니다!`);
+      } else {
+        alert('추출에 실패했습니다. 올바른 텍스트인지 확인해주세요.');
       }
-    } catch (e) { alert('분석 중 오류가 발생했습니다.'); }
+    } catch (e) { alert('데이터를 추출하는 중 서버와 연결이 끊어졌습니다. 다시 시도해주세요.'); }
     finally { setLoading(false); }
   };
 
@@ -142,29 +142,25 @@ export default function AIWordMaster() {
     
     setFeedback({ isCorrect, target, word: current });
 
-    // 정답 시 콤보 증가, 0.8초 후 자동 다음 문제
     if (isCorrect) {
       setStreak(s => s + 1);
       setTimeout(() => handleNext(false, true), 800);
     } else {
-      setStreak(0); // 틀리면 콤보 박살
+      setStreak(0); 
     }
   };
 
   const handleNext = (forceCorrect: boolean, autoCorrect = false) => {
     if (feedback?.isCorrect || forceCorrect) {
-      // 맞춘 단어는 큐에서 영구 삭제 (뽀개기!)
       const remaining = activeWords.slice(1);
       setActiveWords(remaining);
       if (remaining.length === 0) setIsFinished(true);
       if (forceCorrect) setStreak(s => s + 1);
     } else {
-      // 틀린 단어는 큐의 맨 뒤로 얄짤없이 이동 (무한 반복)
       setActiveWords((prev) => [...prev.slice(1), prev[0]]);
     }
     setFeedback(null); setAnswer('');
     
-    // 무호흡 입력을 위해 입력창으로 다시 포커스
     if (!autoCorrect) setTimeout(() => inputRef.current?.focus(), 100);
   };
 
@@ -222,7 +218,6 @@ export default function AIWordMaster() {
         <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center relative min-h-[550px]">
           <button onClick={quitGame} className="absolute top-8 left-8 text-[10px] text-gray-400 uppercase tracking-widest transition-colors flex items-center gap-1">← QUIT</button>
           
-          {/* 🔥 콤보 표시기 (듀오링고의 쫄깃함) */}
           <div className="absolute top-8 right-8 text-sm font-bold text-orange-500 transition-all">
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
@@ -246,7 +241,6 @@ export default function AIWordMaster() {
             {isEnToKo ? current.en : current.ko}
           </h2>
           
-          {/* 🔥 남은 카드 갯수 명시 (타격감) */}
           <p className="text-gray-400 text-sm font-light mb-12">
             {current.phonetics} <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">[{current.pos}]</span>
           </p>
@@ -258,7 +252,7 @@ export default function AIWordMaster() {
               {!feedback.isCorrect && (
                 <div className="flex gap-2">
                   <button 
-                    ref={retryBtnRef} // 마우스 없는 Enter 연타를 위한 자동 포커스
+                    ref={retryBtnRef} 
                     onClick={() => handleNext(false)} 
                     className="flex-1 bg-gray-900 text-white py-3 rounded-xl text-xs font-light hover:bg-gray-800 focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 transition-all outline-none"
                   >
@@ -307,7 +301,7 @@ export default function AIWordMaster() {
         <div className="flex justify-between items-start mb-10">
           <div>
             <h1 className="text-2xl font-normal text-gray-800 tracking-tight">AI Word Master</h1>
-            <p className="text-gray-400 mt-1 font-light text-sm">노트를 붙여넣으면 누락 없이 100% 추출합니다.</p>
+            <p className="text-gray-400 mt-1 font-light text-sm">노트를 붙여넣으면 초고속으로 100% 추출합니다.</p>
           </div>
           <div className="flex flex-col items-end gap-3">
             <button onClick={() => setIsAdminMode(!isAdminMode)} className={`text-[10px] px-3 py-1.5 border rounded-md transition-colors font-light tracking-wide ${isAdminMode ? 'bg-gray-800 text-white border-gray-800' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
@@ -338,7 +332,7 @@ export default function AIWordMaster() {
 
         <textarea className="w-full h-56 p-6 bg-gray-50 border border-gray-100 rounded-2xl mb-6 focus:border-gray-300 outline-none resize-none text-gray-700 font-light leading-relaxed" placeholder="여기에 100개든 200개든 공부한 내용을 복사해서 붙여넣으세요..." value={text} onChange={(e)=>setText(e.target.value)} />
         <button onClick={startAIAnalysis} disabled={loading} className="w-full bg-gray-900 text-white py-5 rounded-2xl font-light tracking-[0.2em] hover:bg-gray-800 disabled:bg-gray-100 transition-all mb-16">
-          {loading ? "단어장 생성 중..." : "GENERATE CHAPTER"}
+          {loading ? "빛의 속도로 단어장 생성 중..." : "GENERATE CHAPTER"}
         </button>
 
         <div className="border-t border-gray-50 pt-10">
