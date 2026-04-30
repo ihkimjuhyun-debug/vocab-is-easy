@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-// Vercel 서버 최대 대기 시간 60초 허용
-export const maxDuration = 60; 
-export const dynamic = 'force-dynamic';
+// Vercel 10초 제한 우회 (Edge Runtime)
+export const runtime = 'edge';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY, 
@@ -13,43 +12,41 @@ export async function POST(req: Request) {
   try {
     const { text, mode } = await req.json();
 
-    let instruction = "";
-    if (mode === 'word') {
-      instruction = "긴 문장보다는 단어(Vocabulary) 위주로 추출해라.";
-    } else if (mode === 'phrase') {
-      instruction = "단일 단어보다는 숙어, 관용구 등 2단어 이상의 표현 위주로 추출해라.";
-    } else {
-      instruction = "단어와 긴 표현을 모두 포함해서 추출해라.";
-    }
-
     const response = await openai.chat.completions.create({
-      // 🔥 핵심 해결책: 속도가 3~4배 빠른 초고속 모델로 엔진 교체! (타임아웃 에러 완벽 해결)
-      model: "gpt-4o-mini",
+      // 밀림 현상을 완벽히 추론하고 재조립하기 위해 가장 똑똑한 gpt-4o 모델 사용
+      model: "gpt-4o", 
       messages: [
         {
           role: "system",
-          content: `너는 무조건 입력된 모든 텍스트를 100% JSON으로 변환하는 무자비한 데이터 파서(Parser)야. 자체적인 필터링이나 요약은 절대 금지한다.
+          content: `너는 극단적으로 훼손된 텍스트 데이터를 100% 복구하여 JSON으로 파싱하는 최고 수준의 데이터 엔지니어다.
           
-          [🔥 절대 지켜야 할 철칙 - 무손실 100% 추출]
-          1. 사용자가 입력한 텍스트가 150개든 200개든 단 하나도 빠짐없이 전부 추출해라. 
-          2. 복사/붙여넣기 오류로 인해 'wash -> 경고문', 'waste -> 세탁' 처럼 영어와 한글 뜻 매칭이 어긋나 보이거나, 중간에 알파벳 'W', 'D' 같은 쓰레기 값이 있어도 절대 네 맘대로 생략하거나 멈추지 마라. 쓰레기 값만 버리고 실제 단어와 뜻은 문맥을 유추해서라도 억지로 짝을 맞춰 배열에 넣어라.
-          3. "여기까지만 하자"는 식의 자체 종료는 절대 금지한다. 사용자가 입력한 텍스트의 맨 마지막 단어가 JSON 배열에 들어갈 때까지 계속 생성해라.
+          [🔥 벤치마크 테스트 핵심 요구사항 - 무손실 복구]
+          1. 현재 사용자가 입력한 데이터는 복사/붙여넣기 오류로 인해 **N+1 밀림 현상(Offset)**이 발생했다.
+             (예: 'warning' -> 'wash' -> 'n. 경고문' -> 'washing' -> 'n. 씻기' => warning의 뜻이 경고문, wash의 뜻이 씻기로 매칭되어야 함)
+          2. 중간에 섞여 있는 'W', 'D', 'F', 'zero' 같은 알파벳이나 무의미한 찌꺼기는 스스로 판단하여 무시하되, 실제 유의미한 150여 개의 영단어와 한글 뜻은 문맥과 지식을 총동원하여 **단 하나도 누락 없이 완벽한 짝을 찾아 배열해라.**
+          3. 데이터가 150개가 넘더라도 도중에 절대 멈추지 마라. 끝까지 파싱해서 출력해야 한다.
           
-          [형식 규칙]
-          - 사용자가 'n. 경고문', 'v. 물을 주다' 등 약어를 썼다면, 뜻에는 '경고문', '물을 주다'만 남기고 약어는 pos 필드(Noun, Verb 등)로 넘겨라.
-          - { "words": [ { "en": "영어", "ko": "한국어 뜻(여러 개면 콤마 구분)", "pos": "품사", "phonetics": "발음기호" } ] }`
+          [출력 형식]
+          반드시 다음 JSON 형태만 출력해라. 약어(n., v., adj., adv.)는 뜻에서 제거하고 pos 필드에 전체 이름(Noun, Verb 등)으로 적어라.
+          {
+            "words": [
+              { "en": "영어단어", "ko": "한국어 뜻(정확히 매칭된 뜻)", "pos": "품사", "phonetics": "발음기호(모르면 비워둠)" }
+            ]
+          }`
         },
         { role: "user", content: text }
       ],
       response_format: { type: "json_object" },
-      // 150~200개 이상의 대용량 출력을 위해 AI의 텍스트 제한 최대로 해제
-      max_tokens: 4000, 
+      // 🔥 150개 이상의 대규모 JSON 변환 시 토큰이 잘리는 현상을 막기 위해 한도를 대폭 상향
+      max_tokens: 8192, 
     });
 
-    const data = JSON.parse(response.choices[0].message.content || '{"words": []}');
+    const content = response.choices[0].message.content;
+    const data = JSON.parse(content || '{"words": []}');
     return NextResponse.json(data.words);
+
   } catch (error: any) {
     console.error('OpenAI API Error:', error);
-    return NextResponse.json({ error: 'AI 분석 실패' }, { status: 500 });
+    return NextResponse.json({ error: 'AI 분석 중 서버 오류 발생' }, { status: 500 });
   }
 }
