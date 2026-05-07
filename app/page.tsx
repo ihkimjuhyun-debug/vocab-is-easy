@@ -17,7 +17,6 @@ interface Chapter {
   words: Word[];
 }
 
-// 한국어 뜻 유연한 채점용 알고리즘
 const calculateSimilarity = (s1: string, s2: string): number => {
   let longer = s1; let shorter = s2;
   if (s1.length < s2.length) { longer = s2; shorter = s1; }
@@ -56,12 +55,9 @@ export default function AIWordMaster() {
   const [isEnToKo, setIsEnToKo] = useState(true);
   
   const [initialActiveCount, setInitialActiveCount] = useState(0);
-  
   const [isFinished, setIsFinished] = useState(false);
   
-  // 🔥 내가 적은 답을 기억하기 위해 userAnswer 필드 추가
   const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word; userAnswer: string } | null>(null);
-  
   const [streak, setStreak] = useState(0);
   
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -78,10 +74,21 @@ export default function AIWordMaster() {
     }
   }, [feedback]);
 
+  // 🔥 버그 픽스 1: 구버전 데이터를 완벽하게 변환 후 즉시 저장하여 NaN 에러 원천 차단
   useEffect(() => {
     const savedData = localStorage.getItem('my_word_storage_v7');
     if (savedData) {
-      setChapters(JSON.parse(savedData));
+      let parsed: Chapter[] = JSON.parse(savedData);
+      parsed = parsed.map(ch => ({
+        ...ch,
+        words: ch.words.map(w => ({
+          ...w,
+          id: w.id || Date.now().toString() + Math.random().toString(36).substring(2),
+          score: Number(w.score) || 0 // 구버전 데이터 호환 방어
+        }))
+      }));
+      setChapters(parsed);
+      localStorage.setItem('my_word_storage_v7', JSON.stringify(parsed));
     }
   }, []);
 
@@ -184,37 +191,38 @@ export default function AIWordMaster() {
     alert('추가되었습니다.');
   };
 
-  // 🔥 핵심 로직: 영어 스펠링 무관용 채점
   const handleCheck = () => {
-    if (activeWords.length === 0 || !answer.trim()) return;
-    const current = activeWords[0];
+    if (activeWords.length === 0) return;
     
+    // 🔥 빈칸 제출 시 무시하지 않고 오답으로 처리하여 피드백 화면을 띄움
+    const submittedAnswer = answer.trim();
+    if (!submittedAnswer && !isEnToKo) {
+       // 영어 입력 모드일 때 빈칸이면 바로 오답 처리 (스페이스바 실수 방지)
+    } else if (!submittedAnswer) {
+      return;
+    }
+
+    const current = activeWords[0];
     const target = isEnToKo ? current.ko : current.en;
     
-    // 특수문자와 공백은 제거하고 소문자로 통일해서 비교
-    const cleanUser = answer.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase();
+    const cleanUser = submittedAnswer.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase();
     const targetOptions = target.split(',').map(t => t.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase());
 
     let isCorrect = false;
     for (const cleanTarget of targetOptions) {
       if (!isEnToKo) {
-        // 🔥 Ko → En 모드 (영어 스펠링 맞추기): 100% 정확히 일치해야 정답 처리
         if (cleanUser === cleanTarget) {
-          isCorrect = true; 
-          break;
+          isCorrect = true; break;
         }
       } else {
-        // 🔥 En → Ko 모드 (한국어 뜻 맞추기): 기존의 유연한 유사도 알고리즘 사용
         const similarity = calculateSimilarity(cleanUser, cleanTarget);
         const threshold = cleanTarget.length > 8 ? 0.55 : 0.75;
         if ((cleanTarget.includes(cleanUser) && cleanUser.length >= cleanTarget.length * 0.5) || similarity >= threshold) {
-          isCorrect = true; 
-          break;
+          isCorrect = true; break;
         }
       }
     }
     
-    // 오답 피드백에 내가 적은 답(userAnswer) 전달
     setFeedback({ isCorrect, target, word: current, userAnswer: answer });
 
     if (isCorrect) {
@@ -229,7 +237,9 @@ export default function AIWordMaster() {
     const currentWord = activeWords[0];
 
     if (feedback?.isCorrect || forceCorrect) {
-      const newScore = Math.min(2, currentWord.score + 1);
+      // 🔥 버그 픽스 2: currentWord.score가 undefined일 수 있는 상황을 원천 봉쇄
+      const currentScore = Number(currentWord.score) || 0;
+      const newScore = Math.min(2, currentScore + 1);
       updateWordScoreInStorage(currentWord.id, newScore); 
 
       if (newScore >= 2) {
@@ -253,7 +263,7 @@ export default function AIWordMaster() {
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter || chapter.words.length === 0) return alert('단어가 없습니다.');
 
-    let wordsToPlay = chapter.words.filter(w => w.score < 2);
+    let wordsToPlay = chapter.words.filter(w => (Number(w.score) || 0) < 2);
 
     if (wordsToPlay.length === 0) {
       if (confirm('🎉 이 챕터의 모든 단어를 완벽히 마스터했습니다! 점수를 초기화하고 처음부터 다시 복습하시겠습니까?')) {
@@ -280,7 +290,7 @@ export default function AIWordMaster() {
     if (chapters.length === 0) return alert('저장된 단어가 없습니다.');
     const allWords = chapters.flatMap(ch => ch.words);
     
-    let wordsToPlay = allWords.filter(w => w.score < 2);
+    let wordsToPlay = allWords.filter(w => (Number(w.score) || 0) < 2);
     if (wordsToPlay.length === 0) return alert('모든 단어를 마스터했습니다! 각 챕터에서 초기화 후 복습하세요.');
 
     const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
@@ -318,9 +328,10 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
     
+    // 🔥 버그 픽스 3: activePoints 계산 시 NaN이 뜨지 않도록 완벽 방어
     const totalPointsNeeded = initialActiveCount * 2;
     const masteredCount = initialActiveCount - activeWords.length;
-    const activePoints = activeWords.reduce((sum, w) => sum + w.score, 0);
+    const activePoints = activeWords.reduce((sum, w) => sum + (Number(w.score) || 0), 0);
     
     const currentPoints = (masteredCount * 2) + activePoints;
     const immediatePoints = currentPoints + (feedback?.isCorrect ? 1 : 0);
@@ -357,7 +368,7 @@ export default function AIWordMaster() {
             <button onClick={() => {setIsEnToKo(false); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${!isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>Ko → En</button>
           </div>
 
-          {current.score === 1 && (
+          {(Number(current.score) || 0) === 1 && (
             <div className="px-3 py-1 mb-2 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full">
               ⭐ 1/2 마스터 (한 번 더 맞추면 통과)
             </div>
@@ -371,21 +382,24 @@ export default function AIWordMaster() {
             {current.phonetics} <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">[{current.pos}]</span>
           </p>
 
-          {/* 🔥 피드백 화면 UI 업데이트 */}
           {feedback ? (
             <div className={`w-full p-6 rounded-2xl text-center ${feedback.isCorrect ? 'bg-green-50' : 'bg-red-50'}`}>
               <p className={`text-sm mb-2 font-bold tracking-widest ${feedback.isCorrect ? 'text-green-600' : 'text-red-600'}`}>
                 {feedback.isCorrect ? 'CORRECT!' : 'INCORRECT'}
               </p>
               
-              <p className="text-gray-900 font-bold text-xl mb-1">{feedback.target}</p>
+              <p className="text-gray-900 font-bold text-xl mb-4">{feedback.target}</p>
               
-              {/* 🔥 틀렸을 경우 내가 친 오답 보여주기 */}
+              {/* 🔥 시인성 극대화: 내가 적은 오답이 한눈에 보이게 디자인 개편 */}
               {!feedback.isCorrect && (
-                <p className="text-sm text-red-400 mb-6 flex justify-center items-center gap-2">
-                  <span>내가 적은 답 :</span>
-                  <span className="line-through decoration-red-400">{feedback.userAnswer}</span>
-                </p>
+                <div className="flex flex-col items-center justify-center gap-2 mb-6">
+                  <span className="text-xs text-red-400 font-bold tracking-widest uppercase">내가 적은 답</span>
+                  <div className="bg-white px-5 py-2.5 rounded-xl shadow-sm border border-red-100">
+                    <span className="text-[17px] text-gray-700 font-mono font-medium line-through decoration-red-500 decoration-[3px]">
+                      {feedback.userAnswer || '(빈칸)'}
+                    </span>
+                  </div>
+                </div>
               )}
               {feedback.isCorrect && <div className="mb-6"></div>}
 
@@ -484,7 +498,7 @@ export default function AIWordMaster() {
 
           <div className="space-y-4">
             {chapters.map((ch) => {
-              const masteredCount = ch.words.filter(w => w.score >= 2).length;
+              const masteredCount = ch.words.filter(w => (Number(w.score) || 0) >= 2).length;
               const totalCount = ch.words.length;
               const isPerfect = totalCount > 0 && masteredCount === totalCount;
 
