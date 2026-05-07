@@ -73,10 +73,19 @@ export default function AIWordMaster() {
     }
   }, [feedback]);
 
+  // 🔥 0.0% 버그 해결 핵심: 과거 데이터 호출 시 score가 undefined면 무조건 0으로 강제 초기화
   useEffect(() => {
     const savedData = localStorage.getItem('my_word_storage_v7');
     if (savedData) {
-      setChapters(JSON.parse(savedData));
+      let parsed: Chapter[] = JSON.parse(savedData);
+      parsed = parsed.map(ch => ({
+        ...ch,
+        words: ch.words.map(w => ({
+          ...w,
+          score: w.score || 0 // 여기서 고장난 NaN 톱니바퀴를 완벽히 고칩니다.
+        }))
+      }));
+      setChapters(parsed);
     }
   }, []);
 
@@ -132,7 +141,7 @@ export default function AIWordMaster() {
           const dataWithProps = rawData.map(w => ({
             en: w.en || '', ko: w.ko || '', pos: w.pos || '', phonetics: w.phonetics || '',
             id: Date.now().toString() + Math.random().toString(36).substring(2),
-            score: 0
+            score: 0 // 새로 추출될 때도 무조건 0 부여
           }));
           allExtractedWords = [...allExtractedWords, ...dataWithProps];
         }
@@ -217,9 +226,10 @@ export default function AIWordMaster() {
 
   const handleNext = (forceCorrect: boolean, autoCorrect = false) => {
     const currentWord = activeWords[0];
+    const currentScore = currentWord.score || 0; // 안전장치 2중 적용
 
     if (feedback?.isCorrect || forceCorrect) {
-      const newScore = Math.min(2, currentWord.score + 1);
+      const newScore = Math.min(2, currentScore + 1);
       updateWordScoreInStorage(currentWord.id, newScore); 
 
       if (newScore >= 2) {
@@ -243,7 +253,7 @@ export default function AIWordMaster() {
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter || chapter.words.length === 0) return alert('단어가 없습니다.');
 
-    let wordsToPlay = chapter.words.filter(w => w.score < 2);
+    let wordsToPlay = chapter.words.filter(w => (w.score || 0) < 2);
 
     if (wordsToPlay.length === 0) {
       if (confirm('🎉 이 챕터의 모든 단어를 완벽히 마스터했습니다! 점수를 초기화하고 처음부터 다시 복습하시겠습니까?')) {
@@ -270,7 +280,7 @@ export default function AIWordMaster() {
     if (chapters.length === 0) return alert('저장된 단어가 없습니다.');
     const allWords = chapters.flatMap(ch => ch.words);
     
-    let wordsToPlay = allWords.filter(w => w.score < 2);
+    let wordsToPlay = allWords.filter(w => (w.score || 0) < 2);
     if (wordsToPlay.length === 0) return alert('모든 단어를 마스터했습니다! 각 챕터에서 초기화 후 복습하세요.');
 
     const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
@@ -308,9 +318,10 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
     
+    // 점수 계산을 안전하게 (score || 0) 처리하여 NaN 발생 차단
     const totalPointsNeeded = initialActiveCount * 2;
     const masteredCount = initialActiveCount - activeWords.length;
-    const activePoints = activeWords.reduce((sum, w) => sum + w.score, 0);
+    const activePoints = activeWords.reduce((sum, w) => sum + (w.score || 0), 0);
     
     const currentPoints = (masteredCount * 2) + activePoints;
     const immediatePoints = currentPoints + (feedback?.isCorrect ? 1 : 0);
@@ -325,9 +336,10 @@ export default function AIWordMaster() {
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
           
+          {/* 🔥 0% 고정 버그 해결 및 "포인트" 기반 직관적 표기로 변경 */}
           <div className="w-full mt-10 mb-8">
             <div className="flex justify-between items-end text-[11px] text-gray-500 font-semibold tracking-widest mb-2 uppercase">
-              <span>{Math.floor(immediatePoints/2)} / {initialActiveCount} 완전 마스터</span>
+              <span>{immediatePoints} / {totalPointsNeeded} 포인트 획득</span>
               <span className="text-sm font-bold text-gray-800 transition-all duration-300">
                 {progress.toFixed(1)}%
               </span>
@@ -347,7 +359,7 @@ export default function AIWordMaster() {
             <button onClick={() => {setIsEnToKo(false); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${!isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400 font-semibold'}`}>Ko → En</button>
           </div>
 
-          {current.score === 1 && (
+          {(current.score || 0) === 1 && (
             <div className="px-3 py-1 mb-2 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full tracking-wide">
               ⭐ 1/2 마스터 (한 번 더 맞추면 통과)
             </div>
@@ -361,7 +373,6 @@ export default function AIWordMaster() {
             {current.phonetics} <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">[{current.pos}]</span>
           </p>
 
-          {/* 🔥 디자인 대폭 수정: 취소선 삭제 및 가독성 개선 */}
           {feedback ? (
             <div className={`w-full p-6 rounded-3xl text-center shadow-sm ${feedback.isCorrect ? 'bg-green-50/50 border border-green-100' : 'bg-red-50/50 border border-red-100'}`}>
               <p className={`text-xs mb-3 font-bold tracking-[0.2em] uppercase ${feedback.isCorrect ? 'text-green-600' : 'text-red-500'}`}>
@@ -475,7 +486,7 @@ export default function AIWordMaster() {
 
           <div className="space-y-4">
             {chapters.map((ch) => {
-              const masteredCount = ch.words.filter(w => w.score >= 2).length;
+              const masteredCount = ch.words.filter(w => (w.score || 0) >= 2).length;
               const totalCount = ch.words.length;
               const isPerfect = totalCount > 0 && masteredCount === totalCount;
 
