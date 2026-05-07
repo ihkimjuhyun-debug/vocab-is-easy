@@ -331,10 +331,29 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
     
-    const totalPointsNeeded = totalWordsCount * 2;
+    // 🔥 착시를 막기 위해 실제 남은 상태를 명확하게 분리해서 계산
     const masteredCount = totalWordsCount - activeWords.length;
+    const halfMasteredCount = activeWords.filter(w => (Number(w.score) || 0) === 1).length;
+    const newCount = activeWords.filter(w => (Number(w.score) || 0) === 0).length;
+
+    // 정답을 맞췄을 때 0.8초 딜레이 없이 UI 즉시 반영 (타격감)
+    let displayMastered = masteredCount;
+    let displayHalf = halfMasteredCount;
+    let displayNew = newCount;
+
+    if (feedback?.isCorrect) {
+      const currentScore = Number(current.score) || 0;
+      if (currentScore === 0) {
+        displayNew = Math.max(0, displayNew - 1);
+        displayHalf += 1;
+      } else if (currentScore === 1) {
+        displayHalf = Math.max(0, displayHalf - 1);
+        displayMastered += 1;
+      }
+    }
+
+    const totalPointsNeeded = totalWordsCount * 2;
     const activePoints = activeWords.reduce((sum, w) => sum + (Number(w.score) || 0), 0);
-    
     const currentPoints = (masteredCount * 2) + activePoints;
     const immediatePoints = currentPoints + (feedback?.isCorrect ? 1 : 0);
     const progress = totalPointsNeeded > 0 ? (Math.min(totalPointsNeeded, immediatePoints) / totalPointsNeeded) * 100 : 0;
@@ -349,8 +368,13 @@ export default function AIWordMaster() {
           </div>
           
           <div className="w-full mt-10 mb-8">
-            <div className="flex justify-between items-end text-[11px] text-gray-500 font-medium tracking-widest mb-2 uppercase">
-              <span>{Math.floor(immediatePoints/2)} / {totalWordsCount} 완전 마스터</span>
+            {/* 🔥 오해를 불렀던 단일 텍스트를, 직관적인 3단계 상태창으로 완벽 분리 */}
+            <div className="flex justify-between items-end text-[10px] font-medium tracking-wide mb-3">
+              <div className="flex gap-3">
+                <span className="text-gray-400">미학습 <span className="text-gray-800 font-bold">{displayNew}</span></span>
+                <span className="text-blue-500">1/2 통과 <span className="font-bold">{displayHalf}</span></span>
+                <span className="text-green-500">완전 정복 <span className="font-bold">{displayMastered}</span></span>
+              </div>
               <span className="text-sm font-bold text-gray-800 transition-all duration-300">
                 {progress.toFixed(1)}%
               </span>
@@ -435,7 +459,7 @@ export default function AIWordMaster() {
                 spellCheck="false" 
               />
               <p className="text-[11px] text-gray-400 mb-6 font-medium tracking-wide">
-                남은 단어 카드: <span className="text-gray-800">{activeWords.length}</span> 개
+                전체 단어장 크기: <span className="text-gray-800">{totalWordsCount}</span> 개
               </p>
               <button 
                 onClick={handleCheck} 
