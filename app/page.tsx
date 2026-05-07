@@ -2,13 +2,22 @@
 import { useState, useEffect, useRef } from 'react';
 
 interface Word {
-  en: string; ko: string; pos: string; phonetics: string;
+  id: string;      
+  en: string; 
+  ko: string; 
+  pos: string; 
+  phonetics: string;
+  score: number;   
 }
 
 interface Chapter {
-  id: string; date: string; title: string; words: Word[];
+  id: string; 
+  date: string; 
+  title: string; 
+  words: Word[];
 }
 
+// 한국어 뜻 유연한 채점용 알고리즘
 const calculateSimilarity = (s1: string, s2: string): number => {
   let longer = s1; let shorter = s2;
   if (s1.length < s2.length) { longer = s2; shorter = s1; }
@@ -45,9 +54,14 @@ export default function AIWordMaster() {
   const [activeWords, setActiveWords] = useState<Word[]>([]);
   const [answer, setAnswer] = useState('');
   const [isEnToKo, setIsEnToKo] = useState(true);
-  const [totalWordsCount, setTotalWordsCount] = useState(0);
+  
+  const [initialActiveCount, setInitialActiveCount] = useState(0);
+  
   const [isFinished, setIsFinished] = useState(false);
-  const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word } | null>(null);
+  
+  // 🔥 내가 적은 답을 기억하기 위해 userAnswer 필드 추가
+  const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word; userAnswer: string } | null>(null);
+  
   const [streak, setStreak] = useState(0);
   
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -65,13 +79,26 @@ export default function AIWordMaster() {
   }, [feedback]);
 
   useEffect(() => {
-    const savedData = localStorage.getItem('my_word_storage_v6');
-    if (savedData) setChapters(JSON.parse(savedData));
+    const savedData = localStorage.getItem('my_word_storage_v7');
+    if (savedData) {
+      setChapters(JSON.parse(savedData));
+    }
   }, []);
 
   const saveToStorage = (newChapters: Chapter[]) => {
     setChapters(newChapters);
-    localStorage.setItem('my_word_storage_v6', JSON.stringify(newChapters));
+    localStorage.setItem('my_word_storage_v7', JSON.stringify(newChapters));
+  };
+
+  const updateWordScoreInStorage = (wordId: string, newScore: number) => {
+    setChapters(prev => {
+      const updated = prev.map(ch => ({
+        ...ch,
+        words: ch.words.map(w => w.id === wordId ? { ...w, score: newScore } : w)
+      }));
+      localStorage.setItem('my_word_storage_v7', JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const getFormattedDate = () => {
@@ -105,9 +132,14 @@ export default function AIWordMaster() {
         
         if (!res.ok) throw new Error('서버 통신 실패');
         
-        const data: Word[] = await res.json();
-        if (data && data.length > 0) {
-          allExtractedWords = [...allExtractedWords, ...data];
+        const rawData: Partial<Word>[] = await res.json();
+        if (rawData && rawData.length > 0) {
+          const dataWithProps = rawData.map(w => ({
+            en: w.en || '', ko: w.ko || '', pos: w.pos || '', phonetics: w.phonetics || '',
+            id: Date.now().toString() + Math.random().toString(36).substring(2),
+            score: 0
+          }));
+          allExtractedWords = [...allExtractedWords, ...dataWithProps];
         }
       }
 
@@ -121,16 +153,14 @@ export default function AIWordMaster() {
         };
         saveToStorage([newChapter, ...chapters]);
         setText('');
-        alert(`제한을 완벽히 뚫었습니다! 총 ${allExtractedWords.length}개의 항목이 복구 및 저장되었습니다!`);
+        alert(`제한을 완벽히 뚫었습니다! 총 ${allExtractedWords.length}개의 항목이 저장되었습니다!`);
       } else {
         alert('추출할 텍스트를 찾지 못했습니다.');
       }
     } catch (e) { 
       alert('분석 중 오류가 발생했습니다.'); 
     } finally { 
-      setLoading(false); 
-      setAnalyzingProgress(0);
-      setTotalChunks(0);
+      setLoading(false); setAnalyzingProgress(0); setTotalChunks(0);
     }
   };
 
@@ -144,30 +174,48 @@ export default function AIWordMaster() {
     if (!newWord.en || !newWord.ko) return alert('필수 항목을 적어주세요.');
     if (chapters.length === 0) return alert('먼저 챕터를 생성해주세요.');
     const updatedChapters = [...chapters];
-    updatedChapters[0].words.push(newWord); 
+    updatedChapters[0].words.push({
+      ...newWord,
+      id: Date.now().toString() + Math.random().toString(36).substring(2),
+      score: 0
+    }); 
     saveToStorage(updatedChapters);
     setNewWord({ en: '', ko: '', pos: 'Noun', phonetics: '' });
     alert('추가되었습니다.');
   };
 
+  // 🔥 핵심 로직: 영어 스펠링 무관용 채점
   const handleCheck = () => {
     if (activeWords.length === 0 || !answer.trim()) return;
     const current = activeWords[0];
     
     const target = isEnToKo ? current.ko : current.en;
+    
+    // 특수문자와 공백은 제거하고 소문자로 통일해서 비교
     const cleanUser = answer.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase();
     const targetOptions = target.split(',').map(t => t.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase());
 
     let isCorrect = false;
     for (const cleanTarget of targetOptions) {
-      const similarity = calculateSimilarity(cleanUser, cleanTarget);
-      const threshold = cleanTarget.length > 8 ? 0.55 : 0.75;
-      if (cleanTarget.includes(cleanUser) && cleanUser.length >= cleanTarget.length * 0.5 || similarity >= threshold) {
-        isCorrect = true; break;
+      if (!isEnToKo) {
+        // 🔥 Ko → En 모드 (영어 스펠링 맞추기): 100% 정확히 일치해야 정답 처리
+        if (cleanUser === cleanTarget) {
+          isCorrect = true; 
+          break;
+        }
+      } else {
+        // 🔥 En → Ko 모드 (한국어 뜻 맞추기): 기존의 유연한 유사도 알고리즘 사용
+        const similarity = calculateSimilarity(cleanUser, cleanTarget);
+        const threshold = cleanTarget.length > 8 ? 0.55 : 0.75;
+        if ((cleanTarget.includes(cleanUser) && cleanUser.length >= cleanTarget.length * 0.5) || similarity >= threshold) {
+          isCorrect = true; 
+          break;
+        }
       }
     }
     
-    setFeedback({ isCorrect, target, word: current });
+    // 오답 피드백에 내가 적은 답(userAnswer) 전달
+    setFeedback({ isCorrect, target, word: current, userAnswer: answer });
 
     if (isCorrect) {
       setStreak(s => s + 1);
@@ -178,24 +226,52 @@ export default function AIWordMaster() {
   };
 
   const handleNext = (forceCorrect: boolean, autoCorrect = false) => {
+    const currentWord = activeWords[0];
+
     if (feedback?.isCorrect || forceCorrect) {
-      const remaining = activeWords.slice(1);
-      setActiveWords(remaining);
-      if (remaining.length === 0) setIsFinished(true);
+      const newScore = Math.min(2, currentWord.score + 1);
+      updateWordScoreInStorage(currentWord.id, newScore); 
+
+      if (newScore >= 2) {
+        const remaining = activeWords.slice(1);
+        setActiveWords(remaining);
+        if (remaining.length === 0) setIsFinished(true);
+      } else {
+        const updatedWord = { ...currentWord, score: newScore };
+        setActiveWords((prev) => [...prev.slice(1), updatedWord]);
+      }
       if (forceCorrect) setStreak(s => s + 1);
     } else {
       setActiveWords((prev) => [...prev.slice(1), prev[0]]);
     }
-    setFeedback(null); setAnswer('');
     
+    setFeedback(null); setAnswer('');
     if (!autoCorrect) setTimeout(() => inputRef.current?.focus(), 100);
   };
 
-  const playChapter = (chapterWords: Word[]) => {
-    if (chapterWords.length === 0) return alert('단어가 없습니다.');
-    const shuffled = [...chapterWords].sort(() => Math.random() - 0.5);
+  const playChapter = (chapterId: string) => {
+    const chapter = chapters.find(c => c.id === chapterId);
+    if (!chapter || chapter.words.length === 0) return alert('단어가 없습니다.');
+
+    let wordsToPlay = chapter.words.filter(w => w.score < 2);
+
+    if (wordsToPlay.length === 0) {
+      if (confirm('🎉 이 챕터의 모든 단어를 완벽히 마스터했습니다! 점수를 초기화하고 처음부터 다시 복습하시겠습니까?')) {
+        const resetWords = chapter.words.map(w => ({ ...w, score: 0 }));
+        setChapters(prev => {
+          const updated = prev.map(ch => ch.id === chapterId ? { ...ch, words: resetWords } : ch);
+          localStorage.setItem('my_word_storage_v7', JSON.stringify(updated));
+          return updated;
+        });
+        wordsToPlay = resetWords;
+      } else {
+        return;
+      }
+    }
+
+    const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
     setActiveWords(shuffled);
-    setTotalWordsCount(shuffled.length);
+    setInitialActiveCount(shuffled.length); 
     setStreak(0);
     setIsFinished(false);
   };
@@ -203,9 +279,13 @@ export default function AIWordMaster() {
   const playAllWords = () => {
     if (chapters.length === 0) return alert('저장된 단어가 없습니다.');
     const allWords = chapters.flatMap(ch => ch.words);
-    const shuffled = [...allWords].sort(() => Math.random() - 0.5);
+    
+    let wordsToPlay = allWords.filter(w => w.score < 2);
+    if (wordsToPlay.length === 0) return alert('모든 단어를 마스터했습니다! 각 챕터에서 초기화 후 복습하세요.');
+
+    const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
     setActiveWords(shuffled);
-    setTotalWordsCount(shuffled.length);
+    setInitialActiveCount(shuffled.length);
     setStreak(0);
     setIsFinished(false);
   };
@@ -219,7 +299,7 @@ export default function AIWordMaster() {
 
   const quitGame = () => {
     setActiveWords([]);
-    setTotalWordsCount(0);
+    setInitialActiveCount(0);
     setStreak(0);
     setIsFinished(false);
     setFeedback(null);
@@ -229,7 +309,7 @@ export default function AIWordMaster() {
     <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
       <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 text-center">
         <div className="text-6xl mb-6">🏆</div>
-        <h2 className="text-2xl font-light mb-10 text-gray-800">모든 단어를 뽀갰습니다!</h2>
+        <h2 className="text-2xl font-light mb-10 text-gray-800">선택한 단어들을 모두 마스터했습니다!</h2>
         <button onClick={quitGame} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all">보관함으로 가기</button>
       </div>
     </div>
@@ -238,10 +318,13 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
     
-    // 🔥 타격감 핵심: '현재 정답 처리 중'인 단어도 즉시 진행도에 반영하여 기다림 없이 바로 차오르게 만듦
-    const isJustCorrect = feedback?.isCorrect; 
-    const completedCount = totalWordsCount - activeWords.length + (isJustCorrect ? 1 : 0);
-    const progress = totalWordsCount > 0 ? (completedCount / totalWordsCount) * 100 : 0;
+    const totalPointsNeeded = initialActiveCount * 2;
+    const masteredCount = initialActiveCount - activeWords.length;
+    const activePoints = activeWords.reduce((sum, w) => sum + w.score, 0);
+    
+    const currentPoints = (masteredCount * 2) + activePoints;
+    const immediatePoints = currentPoints + (feedback?.isCorrect ? 1 : 0);
+    const progress = totalPointsNeeded > 0 ? (Math.min(totalPointsNeeded, immediatePoints) / totalPointsNeeded) * 100 : 0;
     
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
@@ -252,11 +335,9 @@ export default function AIWordMaster() {
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
           
-          {/* 🔥 소수점 첫째 자리까지 세밀하게 차오르는 게이지 UI */}
           <div className="w-full mt-10 mb-8">
             <div className="flex justify-between items-end text-[11px] text-gray-500 font-medium tracking-widest mb-2 uppercase">
-              <span>{completedCount} / {totalWordsCount} 완료</span>
-              {/* 0.6% 처럼 즉각적으로 올라가는 퍼센트 */}
+              <span>{Math.floor(immediatePoints/2)} / {initialActiveCount} 완전 마스터</span>
               <span className="text-sm font-bold text-gray-800 transition-all duration-300">
                 {progress.toFixed(1)}%
               </span>
@@ -266,7 +347,6 @@ export default function AIWordMaster() {
                 className="bg-gray-800 h-full transition-all duration-500 ease-out relative" 
                 style={{ width: `${progress}%` }}
               >
-                {/* 게이지 바 끝부분이 묘하게 빛나는 듀오링고식 효과 */}
                 <div className="absolute top-0 right-0 bottom-0 w-4 bg-white opacity-25 blur-[2px]"></div>
               </div>
             </div>
@@ -277,6 +357,12 @@ export default function AIWordMaster() {
             <button onClick={() => {setIsEnToKo(false); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${!isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>Ko → En</button>
           </div>
 
+          {current.score === 1 && (
+            <div className="px-3 py-1 mb-2 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full">
+              ⭐ 1/2 마스터 (한 번 더 맞추면 통과)
+            </div>
+          )}
+
           <h2 className="text-3xl font-normal mb-2 text-gray-800 text-center leading-snug break-words">
             {isEnToKo ? current.en : current.ko}
           </h2>
@@ -285,10 +371,24 @@ export default function AIWordMaster() {
             {current.phonetics} <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">[{current.pos}]</span>
           </p>
 
+          {/* 🔥 피드백 화면 UI 업데이트 */}
           {feedback ? (
             <div className={`w-full p-6 rounded-2xl text-center ${feedback.isCorrect ? 'bg-green-50' : 'bg-red-50'}`}>
-              <p className={`text-sm mb-2 ${feedback.isCorrect ? 'text-green-600' : 'text-red-600'}`}>{feedback.isCorrect ? 'Correct!' : 'Incorrect'}</p>
-              <p className="text-gray-800 font-medium mb-6">{feedback.target}</p>
+              <p className={`text-sm mb-2 font-bold tracking-widest ${feedback.isCorrect ? 'text-green-600' : 'text-red-600'}`}>
+                {feedback.isCorrect ? 'CORRECT!' : 'INCORRECT'}
+              </p>
+              
+              <p className="text-gray-900 font-bold text-xl mb-1">{feedback.target}</p>
+              
+              {/* 🔥 틀렸을 경우 내가 친 오답 보여주기 */}
+              {!feedback.isCorrect && (
+                <p className="text-sm text-red-400 mb-6 flex justify-center items-center gap-2">
+                  <span>내가 적은 답 :</span>
+                  <span className="line-through decoration-red-400">{feedback.userAnswer}</span>
+                </p>
+              )}
+              {feedback.isCorrect && <div className="mb-6"></div>}
+
               {!feedback.isCorrect && (
                 <div className="flex gap-2">
                   <button 
@@ -315,12 +415,12 @@ export default function AIWordMaster() {
                 value={answer} 
                 onChange={(e)=>setAnswer(e.target.value)} 
                 onKeyDown={(e)=>e.key==='Enter'&&handleCheck()} 
-                placeholder={isEnToKo ? "한국어 뜻 입력" : "영어 스펠링 입력"} 
+                placeholder={isEnToKo ? "한국어 뜻 입력" : "영어 스펠링 정확히 입력"} 
                 autoFocus 
                 spellCheck="false" 
               />
               <p className="text-[11px] text-gray-400 mb-6 font-medium tracking-wide">
-                남은 단어 카드: <span className="text-gray-800">{totalWordsCount - completedCount}</span> 개
+                남은 단어 카드: <span className="text-gray-800">{activeWords.length}</span> 개
               </p>
               <button 
                 onClick={handleCheck} 
@@ -335,14 +435,13 @@ export default function AIWordMaster() {
     );
   }
 
-  // 메인 텍스트 입력 화면
   return (
     <div className="flex flex-col items-center min-h-screen p-6 bg-[#fafafa] pt-16">
       <div className="w-full max-w-2xl bg-white p-10 rounded-[2rem] shadow-sm border border-gray-100">
         <div className="flex justify-between items-start mb-10">
           <div>
             <h1 className="text-2xl font-normal text-gray-800 tracking-tight">AI Word Master</h1>
-            <p className="text-gray-400 mt-1 font-light text-sm">Vercel 제한을 우회하는 분할 전송 시스템이 탑재되었습니다.</p>
+            <p className="text-gray-400 mt-1 font-light text-sm">에빙하우스 2-Strike 암기 시스템이 탑재되었습니다.</p>
           </div>
           <div className="flex flex-col items-end gap-3">
             <button onClick={() => setIsAdminMode(!isAdminMode)} className={`text-[10px] px-3 py-1.5 border rounded-md transition-colors font-light tracking-wide ${isAdminMode ? 'bg-gray-800 text-white border-gray-800' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
@@ -371,7 +470,7 @@ export default function AIWordMaster() {
           </div>
         )}
 
-        <textarea className="w-full h-56 p-6 bg-gray-50 border border-gray-100 rounded-2xl mb-6 focus:border-gray-300 outline-none resize-none text-gray-700 font-light leading-relaxed" placeholder="여기에 100개든 200개든 공부한 내용을 냅다 꽂아주세요..." value={text} onChange={(e)=>setText(e.target.value)} />
+        <textarea className="w-full h-56 p-6 bg-gray-50 border border-gray-100 rounded-2xl mb-6 focus:border-gray-300 outline-none resize-none text-gray-700 font-light leading-relaxed" placeholder="여기에 공부한 내용을 냅다 꽂아주세요..." value={text} onChange={(e)=>setText(e.target.value)} />
         
         <button onClick={startAIAnalysis} disabled={loading} className="w-full bg-gray-900 text-white py-5 rounded-2xl font-light tracking-[0.2em] hover:bg-gray-800 disabled:bg-gray-400 transition-all mb-16">
           {loading ? (totalChunks > 0 ? `쪼개서 분석 중... (${analyzingProgress}/${totalChunks})` : "단어장 생성 중...") : "GENERATE CHAPTER"}
@@ -384,33 +483,43 @@ export default function AIWordMaster() {
           </div>
 
           <div className="space-y-4">
-            {chapters.map((ch) => (
-              <div key={ch.id} className="group p-5 bg-white border border-gray-100 rounded-2xl hover:border-gray-300 transition-all">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1 mr-4">
-                    <p className="text-[10px] text-gray-300 font-medium mb-1">{ch.date}</p>
-                    {editingChapterId === ch.id ? (
-                      <div className="flex gap-2 mt-1">
-                        <input className="flex-1 border-b border-gray-800 outline-none text-sm font-light py-1" value={editTitle} onChange={(e)=>setEditTitle(e.target.value)} autoFocus onKeyDown={(e)=>e.key==='Enter'&&handleRename(ch.id)} />
-                        <button onClick={()=>handleRename(ch.id)} className="text-[10px] text-blue-500 font-bold">SAVE</button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 mt-1">
-                        <h3 className="text-sm font-medium text-gray-800">{ch.title}</h3>
-                        <button onClick={()=>{setEditingChapterId(ch.id); setEditTitle(ch.title);}} className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-gray-400 border border-gray-200 px-1.5 py-0.5 rounded">EDIT</button>
-                      </div>
-                    )}
-                    <p className="text-[11px] text-gray-500 font-medium mt-2 tracking-tighter">{ch.words.length} items</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={()=>{playChapter(ch.words)}} className="px-4 py-2 bg-gray-50 text-gray-800 text-[10px] font-bold rounded-lg hover:bg-gray-100 transition-colors">PLAY</button>
-                    <button onClick={()=>{deleteChapter(ch.id)}} className="p-2 text-red-200 hover:text-red-500 transition-colors">
-                      <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                    </button>
+            {chapters.map((ch) => {
+              const masteredCount = ch.words.filter(w => w.score >= 2).length;
+              const totalCount = ch.words.length;
+              const isPerfect = totalCount > 0 && masteredCount === totalCount;
+
+              return (
+                <div key={ch.id} className={`group p-5 bg-white border rounded-2xl transition-all ${isPerfect ? 'border-green-300 bg-green-50' : 'border-gray-100 hover:border-gray-300'}`}>
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1 mr-4">
+                      <p className="text-[10px] text-gray-300 font-medium mb-1">{ch.date}</p>
+                      {editingChapterId === ch.id ? (
+                        <div className="flex gap-2 mt-1">
+                          <input className="flex-1 border-b border-gray-800 outline-none text-sm font-light py-1 bg-transparent" value={editTitle} onChange={(e)=>setEditTitle(e.target.value)} autoFocus onKeyDown={(e)=>e.key==='Enter'&&handleRename(ch.id)} />
+                          <button onClick={()=>handleRename(ch.id)} className="text-[10px] text-blue-500 font-bold">SAVE</button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 mt-1">
+                          <h3 className="text-sm font-medium text-gray-800">{ch.title}</h3>
+                          <button onClick={()=>{setEditingChapterId(ch.id); setEditTitle(ch.title);}} className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-gray-400 border border-gray-200 px-1.5 py-0.5 rounded bg-white">EDIT</button>
+                        </div>
+                      )}
+                      <p className="text-[11px] text-gray-500 font-medium mt-2 tracking-tighter">
+                        {isPerfect ? '🎉 100% 마스터 완료' : `${masteredCount} / ${totalCount} 마스터`}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={()=>{playChapter(ch.id)}} className="px-4 py-2 bg-gray-50 text-gray-800 text-[10px] font-bold rounded-lg hover:bg-gray-100 transition-colors border border-gray-100 shadow-sm">
+                        {isPerfect ? '초기화 후 다시' : 'PLAY'}
+                      </button>
+                      <button onClick={()=>{deleteChapter(ch.id)}} className="p-2 text-red-200 hover:text-red-500 transition-colors">
+                        <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
