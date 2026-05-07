@@ -73,7 +73,6 @@ export default function AIWordMaster() {
     }
   }, [feedback]);
 
-  // 🔥 0.0% 버그 해결 핵심: 과거 데이터 호출 시 score가 undefined면 무조건 0으로 강제 초기화
   useEffect(() => {
     const savedData = localStorage.getItem('my_word_storage_v7');
     if (savedData) {
@@ -82,7 +81,7 @@ export default function AIWordMaster() {
         ...ch,
         words: ch.words.map(w => ({
           ...w,
-          score: w.score || 0 // 여기서 고장난 NaN 톱니바퀴를 완벽히 고칩니다.
+          score: w.score || 0
         }))
       }));
       setChapters(parsed);
@@ -141,7 +140,7 @@ export default function AIWordMaster() {
           const dataWithProps = rawData.map(w => ({
             en: w.en || '', ko: w.ko || '', pos: w.pos || '', phonetics: w.phonetics || '',
             id: Date.now().toString() + Math.random().toString(36).substring(2),
-            score: 0 // 새로 추출될 때도 무조건 0 부여
+            score: 0 
           }));
           allExtractedWords = [...allExtractedWords, ...dataWithProps];
         }
@@ -216,21 +215,24 @@ export default function AIWordMaster() {
     
     setFeedback({ isCorrect, target, word: current, userAnswer: answer });
 
+    // 🔥 가장 치명적이었던 버그 해결 부위:
+    // setTimeout이 과거의 빈 feedback 상태를 가져가지 못하게, isCorrect 결과를 확실한 파라미터(true)로 꽂아 넣습니다.
     if (isCorrect) {
       setStreak(s => s + 1);
-      setTimeout(() => handleNext(false, true), 800);
+      setTimeout(() => handleNext(true, false, true), 800); 
     } else {
       setStreak(0); 
     }
   };
 
-  const handleNext = (forceCorrect: boolean, autoCorrect = false) => {
+  // 🔥 매개변수 명확화: isCorrectResult로 무조건 정답 여부 고정
+  const handleNext = (isCorrectResult: boolean, addStreak = false, autoTrigger = false) => {
     const currentWord = activeWords[0];
-    const currentScore = currentWord.score || 0; // 안전장치 2중 적용
+    const currentScore = currentWord.score || 0; 
 
-    if (feedback?.isCorrect || forceCorrect) {
+    if (isCorrectResult) {
       const newScore = Math.min(2, currentScore + 1);
-      updateWordScoreInStorage(currentWord.id, newScore); 
+      updateWordScoreInStorage(currentWord.id, newScore); // 점수를 DB에 즉각 꽂아 넣음
 
       if (newScore >= 2) {
         const remaining = activeWords.slice(1);
@@ -238,15 +240,15 @@ export default function AIWordMaster() {
         if (remaining.length === 0) setIsFinished(true);
       } else {
         const updatedWord = { ...currentWord, score: newScore };
-        setActiveWords((prev) => [...prev.slice(1), updatedWord]);
+        setActiveWords((prev) => [...prev.slice(1), updatedWord]); // 1점 추가해서 뒤로 넘김
       }
-      if (forceCorrect) setStreak(s => s + 1);
+      if (addStreak) setStreak(s => s + 1);
     } else {
       setActiveWords((prev) => [...prev.slice(1), prev[0]]);
     }
     
     setFeedback(null); setAnswer('');
-    if (!autoCorrect) setTimeout(() => inputRef.current?.focus(), 100);
+    if (!autoTrigger) setTimeout(() => inputRef.current?.focus(), 100);
   };
 
   const playChapter = (chapterId: string) => {
@@ -318,7 +320,6 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
     
-    // 점수 계산을 안전하게 (score || 0) 처리하여 NaN 발생 차단
     const totalPointsNeeded = initialActiveCount * 2;
     const masteredCount = initialActiveCount - activeWords.length;
     const activePoints = activeWords.reduce((sum, w) => sum + (w.score || 0), 0);
@@ -336,7 +337,6 @@ export default function AIWordMaster() {
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
           
-          {/* 🔥 0% 고정 버그 해결 및 "포인트" 기반 직관적 표기로 변경 */}
           <div className="w-full mt-10 mb-8">
             <div className="flex justify-between items-end text-[11px] text-gray-500 font-semibold tracking-widest mb-2 uppercase">
               <span>{immediatePoints} / {totalPointsNeeded} 포인트 획득</span>
@@ -401,7 +401,7 @@ export default function AIWordMaster() {
                     다시하기 (Enter)
                   </button>
                   <button 
-                    onClick={() => handleNext(true)} 
+                    onClick={() => handleNext(true, true)} 
                     className="flex-1 bg-white border border-gray-200 text-gray-600 py-3.5 rounded-xl text-xs font-semibold tracking-wide hover:bg-gray-50 focus:ring-2 focus:ring-gray-200 transition-all outline-none"
                   >
                     내 답이 맞음 (통과)
