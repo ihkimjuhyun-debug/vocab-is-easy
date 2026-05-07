@@ -1,49 +1,153 @@
-import { NextResponse } from 'next/server';
-import OpenAI from 'openai';
+'use client';
+import { useState, useEffect, useRef } from 'react';
 
-// 🔥 Vercel Hobby 티어의 '10초 강제 종료'를 완벽히 우회하는 유일한 방법!
-export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY, 
-});
-
-export async function POST(req: Request) {
-  try {
-    const { text, mode } = await req.json();
-
-    const response = await openai.chat.completions.create({
-      // 🔥 밀림 현상 복구와 다중 유의어 추출을 위해 가장 똑똑한 모델 사용
-      model: "gpt-4o", 
-      messages: [
-        {
-          role: "system",
-          content: `너는 극단적으로 훼손된 텍스트 데이터를 100% 복구하여 JSON으로 파싱하는 최고 수준의 데이터 엔지니어다.
-          
-          [🔥 벤치마크 테스트 및 다중 뜻 추출 핵심 요구사항 - 무손실 복구]
-          1. 사용자가 입력한 텍스트 뭉치에서 **N+1 밀림 현상(Offset)**(예: warning -> wash -> 경고문)이 발견되면 문맥과 지식을 총동원하여 영단어와 한글 뜻의 짝을 완벽히 맞춰라.
-          2. 중간에 섞인 알파벳(W, D, F), 숫자(zero) 등 찌꺼기는 스스로 판단하여 무시하되, 실제 유의미한 영단어는 단 하나도 누락 없이 파싱해라.
-          3. (핵심) 동사, 형용사, 명사 등 뜻이 여러 개이거나 유의어가 있는 단어는, 사용자가 다양한 유의어를 입력해도 정답 처리될 수 있도록 **반드시 콤마(,)로 구분하여 대표 뜻과 유의어를 2~3개 이상 풍부하게 추출해라.**
-             (예시: "enriching" -> "풍부하게 하다, 비옥하게 하다, 질을 높이다" / "positivity" -> "긍정성, 긍정적 성향, 낙관")
-          
-          [출력 형식]
-          약어(n., v., adj., adv.)는 뜻에서 지우고 pos 필드에 전체 품사(Noun, Verb 등)로 적어라.
-          반드시 { "words": [ { "en": "영어", "ko": "한국어 뜻(콤마로 여러 개)", "pos": "품사", "phonetics": "발음기호(모르면 비움)" } ] } 로 반환해라.`
-        },
-        { role: "user", content: text }
-      ],
-      response_format: { type: "json_object" },
-      // 150개 이상의 대규모 JSON 추출을 위해 토큰 한도를 최대로 개방
-      max_tokens: 8192, 
-    });
-
-    const content = response.choices[0].message.content;
-    const data = JSON.parse(content || '{"words": []}');
-    return NextResponse.json(data.words);
-
-  } catch (error: any) {
-    console.error('OpenAI API Error:', error);
-    return NextResponse.json({ error: 'AI 분석 중 서버 오류 발생' }, { status: 500 });
-  }
+interface Word {
+  id: string;      
+  en: string; 
+  ko: string; 
+  pos: string; 
+  phonetics: string;
+  score: number;   
 }
+
+interface Chapter {
+  id: string; 
+  date: string; 
+  title: string; 
+  words: Word[];
+}
+
+const calculateSimilarity = (s1: string, s2: string): number => {
+  let longer = s1; let shorter = s2;
+  if (s1.length < s2.length) { longer = s2; shorter = s1; }
+  let longerLength = longer.length;
+  if (longerLength === 0) return 1.0;
+  let costs = [];
+  for (let i = 0; i <= longer.length; i++) {
+    let lastValue = i;
+    for (let j = 0; j <= shorter.length; j++) {
+      if (i === 0) costs[j] = j;
+      else {
+        if (j > 0) {
+          let newValue = costs[j - 1];
+          if (longer.charAt(i - 1) !== shorter.charAt(j - 1))
+            newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+          costs[j - 1] = lastValue; lastValue = newValue;
+        }
+      }
+    }
+    if (i > 0) costs[shorter.length] = lastValue;
+  }
+  return (longerLength - costs[shorter.length]) / longerLength;
+};
+
+export default function AIWordMaster() {
+  const [text, setText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [analyzingProgress, setAnalyzingProgress] = useState(0);
+  const [totalChunks, setTotalChunks] = useState(0);
+  
+  const [extractMode, setExtractMode] = useState<'word' | 'phrase' | 'both'>('both');
+  
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [activeWords, setActiveWords] = useState<Word[]>([]);
+  const [answer, setAnswer] = useState('');
+  const [isEnToKo, setIsEnToKo] = useState(true);
+  const [totalWordsCount, setTotalWordsCount] = useState(0);
+  const [isFinished, setIsFinished] = useState(false);
+  
+  const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word; userAnswer: string } | null>(null);
+  const [streak, setStreak] = useState(0);
+  
+  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [newWord, setNewWord] = useState({ en: '', ko: '', pos: 'Noun', phonetics: '' });
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  const retryBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (feedback && !feedback.isCorrect) {
+      setTimeout(() => retryBtnRef.current?.focus(), 50);
+    }
+  }, [feedback]);
+
+  useEffect(() => {
+    const savedData = localStorage.getItem('my_word_storage_v7');
+    if (savedData) {
+      let parsed: Chapter[] = JSON.parse(savedData);
+      parsed = parsed.map(ch => ({
+        ...ch,
+        words: ch.words.map(w => ({
+          ...w,
+          id: w.id || Date.now().toString() + Math.random().toString(36).substring(2),
+          score: Number(w.score) || 0 
+        }))
+      }));
+      setChapters(parsed);
+      localStorage.setItem('my_word_storage_v7', JSON.stringify(parsed));
+    }
+  }, []);
+
+  const saveToStorage = (newChapters: Chapter[]) => {
+    setChapters(newChapters);
+    localStorage.setItem('my_word_storage_v7', JSON.stringify(newChapters));
+  };
+
+  const updateWordScoreInStorage = (wordId: string, newScore: number) => {
+    setChapters(prev => {
+      const updated = prev.map(ch => ({
+        ...ch,
+        words: ch.words.map(w => w.id === wordId ? { ...w, score: newScore } : w)
+      }));
+      localStorage.setItem('my_word_storage_v7', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const getFormattedDate = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  };
+
+  const startAIAnalysis = async () => {
+    if (!text.trim()) return alert('내용을 입력해주세요!');
+    setLoading(true);
+    setAnalyzingProgress(0);
+    
+    try {
+      const lines = text.split('\n');
+      const chunkSize = 40; 
+      const chunks = [];
+      for (let i = 0; i < lines.length; i += chunkSize) {
+        chunks.push(lines.slice(i, i + chunkSize).join('\n'));
+      }
+      
+      setTotalChunks(chunks.length);
+      let allExtractedWords: Word[] = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        setAnalyzingProgress(i + 1);
+        const res = await fetch('/api/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: chunks[i], mode: extractMode }),
+        });
+        
+        if (!res.ok) throw new Error('서버 통신 실패');
+        
+        const rawData: Partial<Word>[] = await res.json();
+        if (rawData && rawData.length > 0) {
+          const dataWithProps = rawData.map(w => ({
+            en: w.en || '', ko: w.ko || '', pos: w.pos || '', phonetics: w.phonetics || '',
+            id: Date.now().toString() + Math.random().toString(36).substring(2),
+            score: 0
+          }));
+          allExtractedWords = [...allExtractedWords, ...dataWithProps];
+        }
+      }
+
+      if (allExtractedWords.length > 0) {
+        const dateStr = getFormattedDate();
+        const newChapter:
