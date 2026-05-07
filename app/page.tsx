@@ -53,12 +53,15 @@ export default function AIWordMaster() {
   const [activeWords, setActiveWords] = useState<Word[]>([]);
   const [answer, setAnswer] = useState('');
   const [isEnToKo, setIsEnToKo] = useState(true);
-  const [totalWordsCount, setTotalWordsCount] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
   
   const [feedback, setFeedback] = useState<{ isCorrect: boolean; target: string; word: Word; userAnswer: string } | null>(null);
   const [streak, setStreak] = useState(0);
   
+  // 🔥 완벽한 동적 퍼센테이지를 위한 세션 추적 상태
+  const [sessionTargetPoints, setSessionTargetPoints] = useState(0);
+  const [initialSessionWordsCount, setInitialSessionWordsCount] = useState(0);
+
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -262,6 +265,20 @@ export default function AIWordMaster() {
     if (!autoCorrect) setTimeout(() => inputRef.current?.focus(), 100);
   };
 
+  // 🔥 게임 시작 시 "동적 목표치"를 수학적으로 정확하게 계산
+  const initializeGame = (wordsToPlay: Word[]) => {
+    const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
+    setActiveWords(shuffled);
+    setInitialSessionWordsCount(shuffled.length);
+    
+    // 각 단어마다 마스터(2점)가 되기 위해 '남은 점수'들을 합산하여 이번 세션의 총 목표치를 구함
+    const targetPts = shuffled.reduce((sum, w) => sum + (2 - (Number(w.score) || 0)), 0);
+    setSessionTargetPoints(targetPts);
+    
+    setStreak(0);
+    setIsFinished(false);
+  };
+
   const playChapter = (chapterId: string) => {
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter || chapter.words.length === 0) return alert('단어가 없습니다.');
@@ -281,12 +298,7 @@ export default function AIWordMaster() {
         return;
       }
     }
-
-    const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
-    setActiveWords(shuffled);
-    setTotalWordsCount(shuffled.length);
-    setStreak(0);
-    setIsFinished(false);
+    initializeGame(wordsToPlay);
   };
 
   const playAllWords = () => {
@@ -296,11 +308,7 @@ export default function AIWordMaster() {
     let wordsToPlay = allWords.filter(w => (Number(w.score) || 0) < 2);
     if (wordsToPlay.length === 0) return alert('모든 단어를 마스터했습니다! 각 챕터에서 초기화 후 복습하세요.');
 
-    const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
-    setActiveWords(shuffled);
-    setTotalWordsCount(shuffled.length);
-    setStreak(0);
-    setIsFinished(false);
+    initializeGame(wordsToPlay);
   };
 
   const deleteChapter = (id: string) => {
@@ -312,7 +320,7 @@ export default function AIWordMaster() {
 
   const quitGame = () => {
     setActiveWords([]);
-    setTotalWordsCount(0);
+    setInitialSessionWordsCount(0);
     setStreak(0);
     setIsFinished(false);
     setFeedback(null);
@@ -331,36 +339,36 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
     
-    // 🔥 착시를 막기 위해 실제 남은 상태를 명확하게 분리해서 계산
-    const masteredCount = totalWordsCount - activeWords.length;
-    const halfMasteredCount = activeWords.filter(w => (Number(w.score) || 0) === 1).length;
-    const newCount = activeWords.filter(w => (Number(w.score) || 0) === 0).length;
+    // 🔥 1. 남아있는 배열을 순회하며 '앞으로 얼마나 더 맞춰야 하는지(잔여 포인트)' 계산
+    const remainingPointsNeeded = activeWords.reduce((sum, w) => sum + (2 - (Number(w.score) || 0)), 0);
+    
+    // 🔥 2. 현재 획득한 포인트 = 전체 목표치 - 잔여 포인트
+    let pointsEarned = sessionTargetPoints - remainingPointsNeeded;
 
-    // 정답을 맞췄을 때 0.8초 딜레이 없이 UI 즉시 반영 (타격감)
-    let displayMastered = masteredCount;
-    let displayHalf = halfMasteredCount;
-    let displayNew = newCount;
-
+    // 🔥 3. 상태창 렌더링용 변수 (feedback에 맞춰 애니메이션 즉시 반영)
+    let displayNew = activeWords.filter(w => (Number(w.score) || 0) === 0).length;
+    let displayHalf = activeWords.filter(w => (Number(w.score) || 0) === 1).length;
+    
     if (feedback?.isCorrect) {
+      pointsEarned += 1; // 정답 쳤을 때 % 바 즉각 상승
       const currentScore = Number(current.score) || 0;
       if (currentScore === 0) {
         displayNew = Math.max(0, displayNew - 1);
         displayHalf += 1;
       } else if (currentScore === 1) {
         displayHalf = Math.max(0, displayHalf - 1);
-        displayMastered += 1;
       }
     }
 
-    const totalPointsNeeded = totalWordsCount * 2;
-    const activePoints = activeWords.reduce((sum, w) => sum + (Number(w.score) || 0), 0);
-    const currentPoints = (masteredCount * 2) + activePoints;
-    const immediatePoints = currentPoints + (feedback?.isCorrect ? 1 : 0);
-    const progress = totalPointsNeeded > 0 ? (Math.min(totalPointsNeeded, immediatePoints) / totalPointsNeeded) * 100 : 0;
+    const displayMastered = initialSessionWordsCount - displayNew - displayHalf;
+    const displayRemainingHits = sessionTargetPoints - pointsEarned; // 앞으로 맞춰야 할 횟수
+
+    // 단어장 크기가 30개든 250개든 비율에 맞춰 완벽하게 퍼센트 계산
+    const progress = sessionTargetPoints > 0 ? (pointsEarned / sessionTargetPoints) * 100 : 0;
     
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
-        <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center relative min-h-[550px]">
+        <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center relative min-h-[600px]">
           <button onClick={quitGame} className="absolute top-8 left-8 text-[10px] text-gray-400 uppercase tracking-widest transition-colors flex items-center gap-1">← QUIT</button>
           
           <div className="absolute top-8 right-8 text-sm font-bold text-orange-500 transition-all">
@@ -368,18 +376,17 @@ export default function AIWordMaster() {
           </div>
           
           <div className="w-full mt-10 mb-8">
-            {/* 🔥 오해를 불렀던 단일 텍스트를, 직관적인 3단계 상태창으로 완벽 분리 */}
-            <div className="flex justify-between items-end text-[10px] font-medium tracking-wide mb-3">
-              <div className="flex gap-3">
-                <span className="text-gray-400">미학습 <span className="text-gray-800 font-bold">{displayNew}</span></span>
-                <span className="text-blue-500">1/2 통과 <span className="font-bold">{displayHalf}</span></span>
-                <span className="text-green-500">완전 정복 <span className="font-bold">{displayMastered}</span></span>
-              </div>
+            {/* 🔥 완벽하게 리뉴얼된 데이터 대시보드 UI */}
+            <div className="flex justify-between items-end mb-2">
+              <span className="text-[11px] text-gray-500 font-medium tracking-wide">
+                진척도: <span className="text-gray-800">{pointsEarned} / {sessionTargetPoints} 완료</span>
+              </span>
               <span className="text-sm font-bold text-gray-800 transition-all duration-300">
                 {progress.toFixed(1)}%
               </span>
             </div>
-            <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden relative shadow-inner">
+            
+            <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden relative shadow-inner mb-4">
               <div 
                 className="bg-gray-800 h-full transition-all duration-500 ease-out relative" 
                 style={{ width: `${progress}%` }}
@@ -387,24 +394,34 @@ export default function AIWordMaster() {
                 <div className="absolute top-0 right-0 bottom-0 w-4 bg-white opacity-25 blur-[2px]"></div>
               </div>
             </div>
+
+            <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 flex justify-between items-center">
+              <div className="flex gap-3 text-[10px] font-medium tracking-wide">
+                <span className="text-gray-400">미학습 <span className="text-gray-800 font-bold">{displayNew}</span></span>
+                <span className="text-blue-500">1/2 통과 <span className="font-bold">{displayHalf}</span></span>
+                <span className="text-green-500">완전 정복 <span className="font-bold">{displayMastered}</span></span>
+              </div>
+            </div>
           </div>
           
-          <div className="flex w-full max-w-[200px] bg-gray-100 p-1 rounded-xl mb-8">
+          <div className="flex w-full max-w-[200px] bg-gray-100 p-1 rounded-xl mb-6">
             <button onClick={() => {setIsEnToKo(true); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>En → Ko</button>
             <button onClick={() => {setIsEnToKo(false); setTimeout(() => inputRef.current?.focus(), 50);}} className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${!isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}>Ko → En</button>
           </div>
 
-          {(Number(current.score) || 0) === 1 && (
-            <div className="px-3 py-1 mb-2 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full">
-              ⭐ 1/2 마스터 (한 번 더 맞추면 통과)
-            </div>
-          )}
+          <div className="h-[24px] mb-2 flex items-center justify-center">
+            {(Number(current.score) || 0) === 1 && (
+              <span className="px-3 py-1 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full">
+                ⭐ 1/2 마스터 (한 번 더 맞추면 통과)
+              </span>
+            )}
+          </div>
 
           <h2 className="text-3xl font-normal mb-2 text-gray-800 text-center leading-snug break-words">
             {isEnToKo ? current.en : current.ko}
           </h2>
           
-          <p className="text-gray-400 text-sm font-light mb-12">
+          <p className="text-gray-400 text-sm font-light mb-10">
             {current.phonetics} <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">[{current.pos}]</span>
           </p>
 
@@ -447,10 +464,10 @@ export default function AIWordMaster() {
               )}
             </div>
           ) : (
-            <div className="w-full flex flex-col items-center">
+            <div className="w-full flex flex-col items-center mt-auto">
               <input 
                 ref={inputRef} 
-                className="w-full p-4 border-b border-gray-100 bg-transparent mb-6 text-center text-xl font-light focus:border-gray-800 outline-none transition-colors" 
+                className="w-full p-4 border-b border-gray-100 bg-transparent mb-4 text-center text-xl font-light focus:border-gray-800 outline-none transition-colors" 
                 value={answer} 
                 onChange={(e)=>setAnswer(e.target.value)} 
                 onKeyDown={(e)=>e.key==='Enter'&&handleCheck()} 
@@ -458,8 +475,8 @@ export default function AIWordMaster() {
                 autoFocus 
                 spellCheck="false" 
               />
-              <p className="text-[11px] text-gray-400 mb-6 font-medium tracking-wide">
-                전체 단어장 크기: <span className="text-gray-800">{totalWordsCount}</span> 개
+              <p className="text-[11px] text-blue-600 mb-6 font-medium tracking-wide bg-blue-50 px-4 py-1.5 rounded-full">
+                목표 달성까지 남은 정답 횟수: <span className="font-bold text-blue-700">{displayRemainingHits}번</span>
               </p>
               <button 
                 onClick={handleCheck} 
@@ -480,7 +497,7 @@ export default function AIWordMaster() {
         <div className="flex justify-between items-start mb-10">
           <div>
             <h1 className="text-2xl font-normal text-gray-800 tracking-tight">AI Word Master</h1>
-            <p className="text-gray-400 mt-1 font-light text-sm">유의어 자동 확장 및 스마트 채점 엔진이 적용되었습니다.</p>
+            <p className="text-gray-400 mt-1 font-light text-sm">동적 진척도 시스템 및 정밀 통계 UI가 적용되었습니다.</p>
           </div>
           <div className="flex flex-col items-end gap-3">
             <button onClick={() => setIsAdminMode(!isAdminMode)} className={`text-[10px] px-3 py-1.5 border rounded-md transition-colors font-light tracking-wide ${isAdminMode ? 'bg-gray-800 text-white border-gray-800' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
