@@ -26,6 +26,12 @@ type WordDict = Record<string, WordDictEntry>;
 const STORAGE_KEY = 'my_word_storage_v8';
 const DICT_KEY = 'word_dictionary_v1';
 
+const MODE_LABELS: Record<'word' | 'phrase' | 'both', string> = {
+  word: '단어',
+  phrase: '문장',
+  both: '복합',
+};
+
 // ============================================================
 // 유틸리티 함수
 // ============================================================
@@ -57,32 +63,94 @@ const calcSimilarity = (s1: string, s2: string): number => {
 const cleanText = (s: string) => s.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase();
 const stripVerbEnding = (s: string) => s.replace(/(하다|되다|시키다|게하다|해지다|이다|다)$/, '');
 
-// 답변 판정 - 영어는 정확 매칭(스펠연습), 한국어는 유연 매칭(다중정답)
+// ────────────────────────────────────────────
+// 템플릿(긴 문장) 판별 / placeholder 제거 / 단어 단위 매칭
+// ────────────────────────────────────────────
+const isTemplateText = (s: string): boolean => {
+  if (!s) return false;
+  const wordCount = s.trim().split(/\s+/).filter(Boolean).length;
+  if (wordCount >= 4) return true;
+  if (/[\[\]{}]/.test(s)) return true;
+  if (/\bS\s*\+?\s*V\b/i.test(s)) return true;
+  if (/동사원형|주제명사|주제|장소|계절|이유|보충\s*설명|상대방\s*의견|내\s*의견|기간|시간/.test(s)) return true;
+  return false;
+};
+
+const stripPlaceholders = (s: string): string =>
+  s
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\{[^}]*\}/g, ' ')
+    .replace(/\bS\s*\+?\s*V\b/gi, ' ')
+    .replace(/동사원형|주제명사|주제|장소|계절|이유\s*\d?|보충\s*설명|상대방\s*의견|내\s*의견|기간|시간/g, ' ')
+    .replace(/[^\w\s가-힣]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const checkTemplateMatch = (user: string, target: string, isEnToKo: boolean): boolean => {
+  const cleanUser = stripPlaceholders(user);
+  const cleanTarget = stripPlaceholders(target);
+  if (!cleanUser || !cleanTarget) return false;
+
+  const userWords = cleanUser.split(/\s+/).filter(Boolean);
+  const targetWords = cleanTarget.split(/\s+/).filter(Boolean);
+  if (targetWords.length === 0 || userWords.length === 0) return false;
+
+  // 길이 차이 40% 초과면 실패
+  const lenDiffRatio = Math.abs(userWords.length - targetWords.length) / Math.max(targetWords.length, 1);
+  if (lenDiffRatio > 0.4) return false;
+
+  if (isEnToKo) {
+    // 한국어: 순서 무관 단어 집합 일치 50% 이상
+    const userSet = new Set(userWords);
+    const matched = targetWords.filter(w => userSet.has(w)).length;
+    return matched / targetWords.length >= 0.5;
+  } else {
+    // 영어: 순서 보존 단어 시퀀스 매칭 70% 이상
+    let matched = 0;
+    let uIdx = 0;
+    for (const tw of targetWords) {
+      while (uIdx < userWords.length && userWords[uIdx] !== tw) uIdx++;
+      if (uIdx < userWords.length) {
+        matched++;
+        uIdx++;
+      }
+    }
+    return matched / targetWords.length >= 0.7;
+  }
+};
+
+// ────────────────────────────────────────────
+// 통합 답변 판정
+// ────────────────────────────────────────────
 const checkAnswer = (userAnswer: string, target: string, isEnToKo: boolean): boolean => {
-  const cleanUser = cleanText(userAnswer);
-  if (!cleanUser) return false;
+  if (!userAnswer.trim()) return false;
+  const targetOptions = target.split(/[,/|·]/).map(t => t.trim()).filter(Boolean);
 
-  const targetOptions = target.split(/[,/|·]/).map(t => cleanText(t)).filter(Boolean);
+  for (const targetOpt of targetOptions) {
+    // 템플릿 (긴 문장)이면 단어 단위 매칭으로 위임
+    if (isTemplateText(targetOpt) || isTemplateText(userAnswer)) {
+      if (checkTemplateMatch(userAnswer, targetOpt, isEnToKo)) return true;
+      continue;
+    }
 
-  for (const cleanTarget of targetOptions) {
+    // 단어/짧은 구: 기존 유연 매칭
+    const cleanUser = cleanText(userAnswer);
+    const cleanTarget = cleanText(targetOpt);
+    if (!cleanUser || !cleanTarget) continue;
+
     if (!isEnToKo) {
-      // 영어 모드: 스펠링 학습 목적이므로 정확 일치만 인정
       if (cleanUser === cleanTarget) return true;
     } else {
-      // 한국어 모드: 유연한 매칭
       if (cleanTarget === cleanUser) return true;
-
       const coreUser = stripVerbEnding(cleanUser);
       const coreTarget = stripVerbEnding(cleanTarget);
       if (coreTarget && coreTarget === coreUser) return true;
-
-      // 부분 포함 (사용자 답이 정답의 핵심부에 포함되는 경우)
       if (coreTarget.length >= 2 && coreUser.length >= 2) {
         if (coreTarget.includes(coreUser) && coreUser.length >= coreTarget.length * 0.4) return true;
         if (coreUser.includes(coreTarget) && coreTarget.length >= coreUser.length * 0.4) return true;
       }
-
-      // 유사도 (오타 허용) - 임계값 완화
       const similarity = calcSimilarity(cleanUser, cleanTarget);
       const threshold = cleanTarget.length > 6 ? 0.55 : 0.70;
       if (similarity >= threshold) return true;
@@ -92,7 +160,7 @@ const checkAnswer = (userAnswer: string, target: string, isEnToKo: boolean): boo
 };
 
 // ============================================================
-// 영어 스펠링 비교 컴포넌트 (Ko→En 오답 시 사용)
+// 글자 단위 영어 스펠링 비교 (Ko→En, 단어/짧은 구)
 // ============================================================
 const EnglishSpellingDiff = ({ correct, user }: { correct: string; user: string }) => {
   const cLower = correct.toLowerCase();
@@ -143,32 +211,52 @@ const EnglishSpellingDiff = ({ correct, user }: { correct: string; user: string 
 };
 
 // ============================================================
-// 한국어 답변 비교 컴포넌트 (En→Ko 오답 시 사용)
+// 단어 단위 템플릿 비교 (Ko→En, 긴 문장)
 // ============================================================
-const KoreanAnswerDiff = ({ targets, user }: { targets: string[]; user: string }) => {
+const TemplateSpellingDiff = ({ correct, user }: { correct: string; user: string }) => {
+  const correctWords = correct.split(/\s+/).filter(Boolean);
+  const userWords = user.split(/\s+/).filter(Boolean);
+  const maxLen = Math.max(correctWords.length, userWords.length);
+
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">✓ 정답 (모두 인정됨)</p>
-        <div className="flex flex-wrap justify-center gap-2">
-          {targets.map((t, i) => (
+        <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">✓ 정답 (단어 순)</p>
+        <div className="flex flex-wrap justify-center gap-1.5">
+          {correctWords.map((w, i) => (
             <span
               key={i}
-              className="bg-green-50 text-green-800 px-3 py-1.5 rounded-lg text-base font-bold border border-green-300"
+              className="bg-green-50 text-green-800 px-2.5 py-1 rounded-md text-sm font-mono font-bold border border-green-300"
             >
-              {t}
+              {w}
             </span>
           ))}
         </div>
       </div>
       <div>
-        <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">✗ 내가 적은 답</p>
-        <div className="flex justify-center">
-          <div className="bg-red-50 px-5 py-2.5 rounded-lg border border-red-300 inline-block">
-            <span className="text-base font-medium text-gray-700 line-through decoration-red-500 decoration-[3px]">
-              {user || '(빈칸)'}
-            </span>
-          </div>
+        <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">✗ 내가 적은 답 (다른 단어 빨강)</p>
+        <div className="flex flex-wrap justify-center gap-1.5">
+          {Array.from({ length: maxLen }).map((_, i) => {
+            const cw = correctWords[i]?.toLowerCase().replace(/[^\w가-힣]/g, '');
+            const uw = userWords[i]?.toLowerCase().replace(/[^\w가-힣]/g, '');
+            const isMatch = cw !== undefined && uw !== undefined && cw === uw;
+            const isMissing = userWords[i] === undefined;
+            const display = userWords[i] || '___';
+            return (
+              <span
+                key={i}
+                className={`px-2.5 py-1 rounded-md text-sm font-mono font-bold border ${
+                  isMatch
+                    ? 'bg-gray-50 text-gray-700 border-gray-200'
+                    : isMissing
+                    ? 'bg-yellow-50 text-yellow-700 border-yellow-300 border-dashed'
+                    : 'bg-red-100 text-red-700 border-red-400'
+                }`}
+              >
+                {display}
+              </span>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -176,17 +264,46 @@ const KoreanAnswerDiff = ({ targets, user }: { targets: string[]; user: string }
 };
 
 // ============================================================
+// 한국어 답변 비교 (En→Ko)
+// ============================================================
+const KoreanAnswerDiff = ({ targets, user }: { targets: string[]; user: string }) => (
+  <div className="space-y-3">
+    <div>
+      <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">✓ 정답 (모두 인정됨)</p>
+      <div className="flex flex-wrap justify-center gap-2">
+        {targets.map((t, i) => (
+          <span
+            key={i}
+            className="bg-green-50 text-green-800 px-3 py-1.5 rounded-lg text-base font-bold border border-green-300"
+          >
+            {t}
+          </span>
+        ))}
+      </div>
+    </div>
+    <div>
+      <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">✗ 내가 적은 답</p>
+      <div className="flex justify-center">
+        <div className="bg-red-50 px-5 py-2.5 rounded-lg border border-red-300 inline-block max-w-full">
+          <span className="text-base font-medium text-gray-700 line-through decoration-red-500 decoration-[3px] break-words">
+            {user || '(빈칸)'}
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+// ============================================================
 // 메인 컴포넌트
 // ============================================================
 export default function AIWordMaster() {
-  // --- 입력/분석 상태 ---
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [analyzingProgress, setAnalyzingProgress] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
   const [extractMode, setExtractMode] = useState<'word' | 'phrase' | 'both'>('both');
 
-  // --- 보관함 / 게임 상태 ---
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [activeWords, setActiveWords] = useState<Word[]>([]);
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
@@ -200,18 +317,14 @@ export default function AIWordMaster() {
   const [sessionTargetPoints, setSessionTargetPoints] = useState(0);
   const [initialSessionWordsCount, setInitialSessionWordsCount] = useState(0);
 
-  // --- 관리 모드 ---
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [newWord, setNewWord] = useState({ en: '', ko: '', pos: 'Noun', phonetics: '' });
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const retryBtnRef = useRef<HTMLButtonElement>(null);
 
-  // ============================================================
-  // 라이프사이클
-  // ============================================================
   useEffect(() => {
     if (feedback && !feedback.isCorrect) {
       setTimeout(() => retryBtnRef.current?.focus(), 50);
@@ -232,9 +345,7 @@ export default function AIWordMaster() {
           })),
         }));
         setChapters(fixed);
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
   }, []);
 
@@ -257,7 +368,6 @@ export default function AIWordMaster() {
     });
   };
 
-  // 단어 사전 - 같은 영단어는 의미를 합쳐서 통일
   const getWordDict = (): WordDict => {
     try {
       return JSON.parse(localStorage.getItem(DICT_KEY) || '{}');
@@ -271,9 +381,7 @@ export default function AIWordMaster() {
     const enriched = words.map(w => {
       const key = w.en.toLowerCase().trim();
       if (!key) return w;
-
       if (dict[key]) {
-        // 기존 의미 + 새 의미 합집합
         const existing = dict[key].ko.split(/,/).map(s => s.trim()).filter(Boolean);
         const incoming = w.ko.split(/,/).map(s => s.trim()).filter(Boolean);
         const merged = Array.from(new Set([...existing, ...incoming])).join(', ');
@@ -300,7 +408,7 @@ export default function AIWordMaster() {
   };
 
   // ============================================================
-  // AI 분석 (청크 분할 + 사전 통합)
+  // AI 분석
   // ============================================================
   const startAnalysis = async () => {
     if (!text.trim()) return alert('내용을 입력해주세요!');
@@ -339,10 +447,8 @@ export default function AIWordMaster() {
         }
       }
 
-      // 사전과 통합 (다른 챕터에서 본 적 있는 단어는 의미 통일)
       const enriched = enrichWithDictionary(allWords);
 
-      // 같은 챕터 내 영단어 중복 제거
       const seen = new Set<string>();
       const deduped = enriched.filter(w => {
         const k = w.en.toLowerCase().trim();
@@ -355,12 +461,12 @@ export default function AIWordMaster() {
         const newChapter: Chapter = {
           id: Date.now().toString(),
           date: getFormattedDate(),
-          title: `${extractMode === 'phrase' ? '표현' : extractMode === 'word' ? '단어' : '복합'} 꾸러미`,
+          title: `${MODE_LABELS[extractMode]} 꾸러미`,
           words: deduped,
         };
         saveChapters([newChapter, ...chapters]);
         setText('');
-        alert(`총 ${deduped.length}개 항목이 저장되었습니다! (사전 통합 완료)`);
+        alert(`총 ${deduped.length}개 항목이 저장되었습니다!`);
       } else {
         alert('추출할 텍스트를 찾지 못했습니다.');
       }
@@ -374,7 +480,7 @@ export default function AIWordMaster() {
   };
 
   // ============================================================
-  // 게임 진행 로직 (실시간 진척도 - 가짜 보정 없음)
+  // 게임 로직
   // ============================================================
   const initializeGame = (wordsToPlay: Word[], chapterId: string | null) => {
     const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
@@ -390,10 +496,9 @@ export default function AIWordMaster() {
   const playChapter = (chapterId: string) => {
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter || chapter.words.length === 0) return alert('단어가 없습니다.');
-
     let wordsToPlay = chapter.words.filter(w => (Number(w.score) || 0) < 2);
     if (wordsToPlay.length === 0) {
-      if (confirm('🎉 이 챕터의 모든 단어를 마스터했습니다! 점수를 초기화하고 다시 복습하시겠습니까?')) {
+      if (confirm('🎉 이 챕터의 모든 항목을 마스터했습니다! 점수를 초기화하고 다시 복습하시겠습니까?')) {
         const resetWords = chapter.words.map(w => ({ ...w, score: 0 }));
         const updated = chapters.map(ch => (ch.id === chapterId ? { ...ch, words: resetWords } : ch));
         saveChapters(updated);
@@ -404,14 +509,13 @@ export default function AIWordMaster() {
   };
 
   const playAllWords = () => {
-    if (chapters.length === 0) return alert('저장된 단어가 없습니다.');
+    if (chapters.length === 0) return alert('저장된 항목이 없습니다.');
     const allWords = chapters.flatMap(ch => ch.words);
     const wordsToPlay = allWords.filter(w => (Number(w.score) || 0) < 2);
-    if (wordsToPlay.length === 0) return alert('모든 단어를 마스터했습니다!');
+    if (wordsToPlay.length === 0) return alert('모든 항목을 마스터했습니다!');
     initializeGame(wordsToPlay, null);
   };
 
-  // 정답 처리 - 점수를 즉시 갱신해서 진척도가 실시간 반영되도록
   const handleCheck = () => {
     if (activeWords.length === 0) return;
     const submitted = answer.trim();
@@ -424,7 +528,6 @@ export default function AIWordMaster() {
     if (isCorrect) {
       const newScore = Math.min(2, (Number(current.score) || 0) + 1);
       const updated = { ...current, score: newScore };
-      // 즉시 activeWords[0]의 score를 업데이트 → 진척도 실시간 반영
       setActiveWords(prev => [updated, ...prev.slice(1)]);
       updateWordScore(current.id, newScore);
       setStreak(s => s + 1);
@@ -450,7 +553,6 @@ export default function AIWordMaster() {
     if (!autoFromCorrect) setTimeout(() => inputRef.current?.focus(), 100);
   };
 
-  // 오답 후 "내 답이 맞음" 클릭
   const handleForceCorrect = () => {
     const current = activeWords[0];
     if (!current) return;
@@ -464,7 +566,6 @@ export default function AIWordMaster() {
     setTimeout(() => advanceQueue(false), 0);
   };
 
-  // 오답 후 "다시하기" 클릭
   const handleRetry = () => {
     setActiveWords(prev => (prev.length ? [...prev.slice(1), prev[0]] : prev));
     setFeedback(null);
@@ -504,7 +605,7 @@ export default function AIWordMaster() {
   };
 
   // ============================================================
-  // 화면 1: 완료 (성취 화면)
+  // 화면 1: 완료
   // ============================================================
   if (isFinished) {
     const completedChapter = activeChapterId ? chapters.find(c => c.id === activeChapterId) : null;
@@ -521,8 +622,8 @@ export default function AIWordMaster() {
           </h2>
           <p className="text-sm text-gray-500 mb-10 font-light leading-relaxed">
             {isAllMastered
-              ? `${completedChapter?.title}의 모든 단어를 마스터했습니다 🎉`
-              : '이번 세션의 단어들을 모두 처리했습니다.'}
+              ? `${completedChapter?.title}의 모든 항목을 마스터했습니다 🎉`
+              : '이번 세션의 항목들을 모두 처리했습니다.'}
           </p>
           <button
             onClick={quitGame}
@@ -541,7 +642,6 @@ export default function AIWordMaster() {
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
 
-    // 진척도 - 가짜 보정 없이 activeWords의 현재 score만으로 계산
     const remainingPoints = activeWords.reduce((sum, w) => sum + (2 - (Number(w.score) || 0)), 0);
     const pointsEarned = sessionTargetPoints - remainingPoints;
     const progress = sessionTargetPoints > 0 ? (pointsEarned / sessionTargetPoints) * 100 : 0;
@@ -551,11 +651,13 @@ export default function AIWordMaster() {
     const displayMastered = initialSessionWordsCount - displayNew - displayHalf;
     const displayRemainingHits = remainingPoints;
 
+    const questionText = isEnToKo ? current.en : current.ko;
     const targetsList = (isEnToKo ? current.ko : current.en).split(/[,/|·]/).map(t => t.trim()).filter(Boolean);
+    const currentIsTemplate = isTemplateText(questionText) || isTemplateText(targetsList[0] || '');
 
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
-        <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center relative min-h-[600px]">
+        <div className="w-full max-w-md p-8 sm:p-10 bg-white rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center relative min-h-[600px]">
           <button onClick={quitGame} className="absolute top-8 left-8 text-[10px] text-gray-400 uppercase tracking-widest transition-colors flex items-center gap-1">
             ← QUIT
           </button>
@@ -564,7 +666,7 @@ export default function AIWordMaster() {
           </div>
 
           {/* 진척도 대시보드 */}
-          <div className="w-full mt-10 mb-8">
+          <div className="w-full mt-10 mb-6">
             <div className="flex justify-between items-end mb-2">
               <span className="text-[11px] text-gray-500 font-medium tracking-wide">
                 진척도: <span className="text-gray-800">{pointsEarned} / {sessionTargetPoints} 완료</span>
@@ -591,7 +693,7 @@ export default function AIWordMaster() {
           </div>
 
           {/* 모드 토글 */}
-          <div className="flex w-full max-w-[200px] bg-gray-100 p-1 rounded-xl mb-6">
+          <div className="flex w-full max-w-[200px] bg-gray-100 p-1 rounded-xl mb-4">
             <button
               onClick={() => { setIsEnToKo(true); setTimeout(() => inputRef.current?.focus(), 50); }}
               className={`flex-1 text-[10px] py-2 rounded-lg uppercase tracking-widest transition-all ${isEnToKo ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}
@@ -606,20 +708,27 @@ export default function AIWordMaster() {
             </button>
           </div>
 
-          {/* 1/2 통과 뱃지 */}
-          <div className="h-[24px] mb-2 flex items-center justify-center">
+          {/* 뱃지 영역 */}
+          <div className="h-[24px] mb-2 flex items-center justify-center gap-2">
+            {currentIsTemplate && !feedback && (
+              <span className="px-3 py-1 text-[10px] font-bold text-purple-600 bg-purple-50 rounded-full">
+                📝 템플릿 문장 (단어순 위주 평가)
+              </span>
+            )}
             {(Number(current.score) || 0) === 1 && !feedback && (
               <span className="px-3 py-1 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-full">
-                ⭐ 1/2 마스터 (한 번 더 맞추면 통과)
+                ⭐ 1/2 마스터
               </span>
             )}
           </div>
 
           {/* 문제 출제 */}
-          <h2 className="text-3xl font-normal mb-2 text-gray-800 text-center leading-snug break-words">
-            {isEnToKo ? current.en : current.ko}
+          <h2 className={`font-normal mb-2 text-gray-800 text-center leading-snug break-words ${
+            currentIsTemplate ? 'text-lg px-2' : 'text-3xl'
+          }`}>
+            {questionText}
           </h2>
-          <p className="text-gray-400 text-sm font-light mb-10">
+          <p className="text-gray-400 text-sm font-light mb-8">
             {current.phonetics}
             <span className="text-[10px] ml-1 opacity-50 border border-gray-200 px-1.5 py-0.5 rounded-full">
               [{current.pos}]
@@ -633,13 +742,26 @@ export default function AIWordMaster() {
               </p>
 
               {feedback.isCorrect ? (
-                <p className="text-gray-900 font-bold text-xl mb-2">{feedback.target}</p>
+                <p className={`text-gray-900 font-bold mb-2 break-words ${
+                  isTemplateText(feedback.target) ? 'text-base leading-relaxed' : 'text-xl'
+                }`}>
+                  {feedback.target}
+                </p>
               ) : (
                 <div className="mb-6">
-                  {isEnToKo
-                    ? <KoreanAnswerDiff targets={targetsList} user={feedback.userAnswer} />
-                    : <EnglishSpellingDiff correct={targetsList[0] || feedback.target} user={feedback.userAnswer} />
-                  }
+                  {isEnToKo ? (
+                    <KoreanAnswerDiff targets={targetsList} user={feedback.userAnswer} />
+                  ) : currentIsTemplate ? (
+                    <TemplateSpellingDiff
+                      correct={targetsList[0] || feedback.target}
+                      user={feedback.userAnswer}
+                    />
+                  ) : (
+                    <EnglishSpellingDiff
+                      correct={targetsList[0] || feedback.target}
+                      user={feedback.userAnswer}
+                    />
+                  )}
                 </div>
               )}
 
@@ -663,13 +785,29 @@ export default function AIWordMaster() {
             </div>
           ) : (
             <div className="w-full flex flex-col items-center mt-auto">
-              <input
+              <textarea
                 ref={inputRef}
-                className="w-full p-4 border-b border-gray-100 bg-transparent mb-4 text-center text-xl font-light focus:border-gray-800 outline-none transition-colors"
+                rows={currentIsTemplate ? 3 : 1}
+                className={`w-full px-4 py-3 border-b border-gray-100 bg-transparent mb-4 text-center font-light focus:border-gray-800 outline-none transition-colors resize-none overflow-hidden ${
+                  currentIsTemplate ? 'text-base leading-relaxed' : 'text-xl'
+                }`}
                 value={answer}
                 onChange={e => setAnswer(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleCheck()}
-                placeholder={isEnToKo ? '한국어 뜻 입력 (유연 매칭)' : '영어 스펠링 정확히 입력'}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleCheck();
+                  }
+                }}
+                placeholder={
+                  currentIsTemplate
+                    ? isEnToKo
+                      ? '한국어 의미 입력 (단어 위주 평가)'
+                      : '영어 템플릿 입력 (Shift+Enter 줄바꿈)'
+                    : isEnToKo
+                    ? '한국어 뜻 입력'
+                    : '영어 스펠링 정확히 입력'
+                }
                 autoFocus
                 spellCheck="false"
               />
@@ -690,7 +828,7 @@ export default function AIWordMaster() {
   }
 
   // ============================================================
-  // 화면 3: 메인 (입력 + 보관함)
+  // 화면 3: 메인
   // ============================================================
   return (
     <div className="flex flex-col items-center min-h-screen p-6 bg-[#fafafa] pt-16">
@@ -698,7 +836,7 @@ export default function AIWordMaster() {
         <div className="flex justify-between items-start mb-10">
           <div>
             <h1 className="text-2xl font-normal text-gray-800 tracking-tight">AI Word Master</h1>
-            <p className="text-gray-400 mt-1 font-light text-sm">사전 통합 · 실시간 진척도 · 스펠링 코칭</p>
+            <p className="text-gray-400 mt-1 font-light text-sm">단어 · 템플릿 문장 통합 학습기</p>
           </div>
           <div className="flex flex-col items-end gap-3">
             <button
@@ -712,13 +850,26 @@ export default function AIWordMaster() {
                 <button
                   key={m}
                   onClick={() => setExtractMode(m)}
-                  className={`px-4 py-2 text-[10px] rounded-lg uppercase tracking-widest transition-all ${extractMode === m ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}
+                  className={`px-4 py-2 text-[11px] rounded-lg tracking-wide transition-all ${extractMode === m ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-400'}`}
                 >
-                  {m}
+                  {MODE_LABELS[m]}
                 </button>
               ))}
             </div>
           </div>
+        </div>
+
+        {/* 모드 설명 힌트 */}
+        <div className={`mb-6 px-4 py-2.5 rounded-xl border text-[11px] font-medium tracking-wide ${
+          extractMode === 'phrase'
+            ? 'bg-purple-50 border-purple-200 text-purple-700'
+            : extractMode === 'word'
+            ? 'bg-blue-50 border-blue-200 text-blue-700'
+            : 'bg-amber-50 border-amber-200 text-amber-700'
+        }`}>
+          {extractMode === 'phrase' && '📝 문장 모드: "This photo might have been taken in"처럼 템플릿 문장을 통째로 추출합니다.'}
+          {extractMode === 'word' && '🔤 단어 모드: 단어 단위로 추출하고 동의어를 풍부하게 보강합니다.'}
+          {extractMode === 'both' && '🎯 복합 모드: 단어와 템플릿 문장을 동시에 추출합니다.'}
         </div>
 
         {isAdminMode && (
@@ -727,7 +878,7 @@ export default function AIWordMaster() {
             <div className="grid grid-cols-2 gap-4 mb-4">
               <input placeholder="영어 (필수)" value={newWord.en} onChange={e => setNewWord({ ...newWord, en: e.target.value })} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
               <input placeholder="한국어 뜻 (필수, 콤마로 여러개)" value={newWord.ko} onChange={e => setNewWord({ ...newWord, ko: e.target.value })} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
-              <input placeholder="유형 (예: Phrase)" value={newWord.pos} onChange={e => setNewWord({ ...newWord, pos: e.target.value })} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
+              <input placeholder="유형 (예: Expression)" value={newWord.pos} onChange={e => setNewWord({ ...newWord, pos: e.target.value })} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
               <input placeholder="발음 기호" value={newWord.phonetics} onChange={e => setNewWord({ ...newWord, phonetics: e.target.value })} className="p-3 rounded-xl border border-gray-200 bg-white text-sm font-light outline-none focus:border-gray-400" />
             </div>
             <button onClick={handleAddWord} className="w-full bg-blue-600 text-white py-3 rounded-xl text-sm font-light tracking-wide hover:bg-blue-700 transition-colors">
