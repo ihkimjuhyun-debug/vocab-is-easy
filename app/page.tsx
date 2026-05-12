@@ -1,8 +1,8 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 // ============================================================
-// 타입 정의
+// 타입 & 상수
 // ============================================================
 interface Word {
   id: string;
@@ -10,22 +10,19 @@ interface Word {
   ko: string;
   pos: string;
   phonetics: string;
-  score: number; // 0=미학습, 1=한번통과, 2=마스터(2번연속정답)
+  score: number;
 }
-
 interface Chapter {
   id: string;
   date: string;
   title: string;
   words: Word[];
 }
-
 type WordDictEntry = { ko: string; pos: string; phonetics: string };
 type WordDict = Record<string, WordDictEntry>;
 
 const STORAGE_KEY = 'my_word_storage_v8';
 const DICT_KEY = 'word_dictionary_v1';
-
 const MODE_LABELS: Record<'word' | 'phrase' | 'both', string> = {
   word: '단어',
   phrase: '문장',
@@ -33,10 +30,8 @@ const MODE_LABELS: Record<'word' | 'phrase' | 'both', string> = {
 };
 
 // ============================================================
-// 유틸리티 함수
+// 텍스트 유틸리티
 // ============================================================
-
-// 레벤슈타인 유사도 (0~1)
 const calcSimilarity = (s1: string, s2: string): number => {
   const longer = s1.length >= s2.length ? s1 : s2;
   const shorter = s1.length >= s2.length ? s2 : s1;
@@ -63,18 +58,16 @@ const calcSimilarity = (s1: string, s2: string): number => {
 const cleanText = (s: string) => s.replace(/[^가-힣a-zA-Z0-9]/g, '').toLowerCase();
 const stripVerbEnding = (s: string) => s.replace(/(하다|되다|시키다|게하다|해지다|이다|다)$/, '');
 
-// ────────────────────────────────────────────
-// 템플릿(긴 문장) 판별 / placeholder 제거 / 단어 단위 매칭
-// ────────────────────────────────────────────
 const isTemplateText = (s: string): boolean => {
   if (!s) return false;
   const wordCount = s.trim().split(/\s+/).filter(Boolean).length;
   if (wordCount >= 4) return true;
   if (/[\[\]{}]/.test(s)) return true;
   if (/\bS\s*\+?\s*V\b/i.test(s)) return true;
-  if (/동사원형|주제명사|주제|장소|계절|이유|보충\s*설명|상대방\s*의견|내\s*의견|기간|시간/.test(s)) return true;
+  if (/동사원형|주제명사|장소|계절|이유|보충\s*설명|상대방\s*의견|내\s*의견|기간|시간/.test(s)) return true;
   return false;
 };
+const isTemplatePos = (pos: string): boolean => /template|expression/i.test(pos || '');
 
 const stripPlaceholders = (s: string): string =>
   s
@@ -88,54 +81,69 @@ const stripPlaceholders = (s: string): string =>
     .trim()
     .toLowerCase();
 
+// 부가설명 부분 판별 (긴 문맥/placeholder 시작/물결 등)
+const isExtraContextPart = (s: string): boolean => {
+  const trimmed = s.trim();
+  if (trimmed.length < 10) return false;
+  if (/^~/.test(trimmed)) return true;
+  if (/S\s*\+?\s*V/.test(trimmed)) return true;
+  if (trimmed.startsWith('[')) return true;
+  if (trimmed.length > 20) return true;
+  return false;
+};
+
+// 콤마 분리 중 부가설명 등장 전까지의 핵심 답안 추출
+const extractCoreMeaning = (s: string): string => {
+  if (!s) return s;
+  const parts = s.split(/,/);
+  if (parts.length <= 1) return s;
+  const core: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0 && isExtraContextPart(parts[i])) break;
+    core.push(parts[i]);
+  }
+  return core.join(',').trim();
+};
+
+// ============================================================
+// 답변 판정
+// ============================================================
 const checkTemplateMatch = (user: string, target: string, isEnToKo: boolean): boolean => {
   const cleanUser = stripPlaceholders(user);
   const cleanTarget = stripPlaceholders(target);
   if (!cleanUser || !cleanTarget) return false;
-
   const userWords = cleanUser.split(/\s+/).filter(Boolean);
   const targetWords = cleanTarget.split(/\s+/).filter(Boolean);
   if (targetWords.length === 0 || userWords.length === 0) return false;
-
-  // 길이 차이 40% 초과면 실패
   const lenDiffRatio = Math.abs(userWords.length - targetWords.length) / Math.max(targetWords.length, 1);
   if (lenDiffRatio > 0.4) return false;
-
   if (isEnToKo) {
-    // 한국어: 순서 무관 단어 집합 일치 50% 이상
     const userSet = new Set(userWords);
     const matched = targetWords.filter(w => userSet.has(w)).length;
     return matched / targetWords.length >= 0.5;
-  } else {
-    // 영어: 순서 보존 단어 시퀀스 매칭 70% 이상
-    let matched = 0;
-    let uIdx = 0;
-    for (const tw of targetWords) {
-      while (uIdx < userWords.length && userWords[uIdx] !== tw) uIdx++;
-      if (uIdx < userWords.length) {
-        matched++;
-        uIdx++;
-      }
-    }
-    return matched / targetWords.length >= 0.7;
   }
+  let matched = 0;
+  let uIdx = 0;
+  for (const tw of targetWords) {
+    while (uIdx < userWords.length && userWords[uIdx] !== tw) uIdx++;
+    if (uIdx < userWords.length) {
+      matched++;
+      uIdx++;
+    }
+  }
+  return matched / targetWords.length >= 0.7;
 };
 
-// ────────────────────────────────────────────
-// 통합 답변 판정
-// ────────────────────────────────────────────
 const checkAnswer = (userAnswer: string, target: string, isEnToKo: boolean): boolean => {
   if (!userAnswer.trim()) return false;
-  const targetOptions = target.split(/[,/|·]/).map(t => t.trim()).filter(Boolean);
+  const coreTarget = extractCoreMeaning(target);
+  const targetOptions = coreTarget.split(/[,/|·]/).map(t => t.trim()).filter(Boolean);
 
   for (const targetOpt of targetOptions) {
-    // 템플릿 (긴 문장)이면 단어 단위 매칭으로 위임
     if (isTemplateText(targetOpt) || isTemplateText(userAnswer)) {
       if (checkTemplateMatch(userAnswer, targetOpt, isEnToKo)) return true;
       continue;
     }
-
-    // 단어/짧은 구: 기존 유연 매칭
     const cleanUser = cleanText(userAnswer);
     const cleanTarget = cleanText(targetOpt);
     if (!cleanUser || !cleanTarget) continue;
@@ -145,11 +153,11 @@ const checkAnswer = (userAnswer: string, target: string, isEnToKo: boolean): boo
     } else {
       if (cleanTarget === cleanUser) return true;
       const coreUser = stripVerbEnding(cleanUser);
-      const coreTarget = stripVerbEnding(cleanTarget);
-      if (coreTarget && coreTarget === coreUser) return true;
-      if (coreTarget.length >= 2 && coreUser.length >= 2) {
-        if (coreTarget.includes(coreUser) && coreUser.length >= coreTarget.length * 0.4) return true;
-        if (coreUser.includes(coreTarget) && coreTarget.length >= coreUser.length * 0.4) return true;
+      const coreTargetWord = stripVerbEnding(cleanTarget);
+      if (coreTargetWord && coreTargetWord === coreUser) return true;
+      if (coreTargetWord.length >= 2 && coreUser.length >= 2) {
+        if (coreTargetWord.includes(coreUser) && coreUser.length >= coreTargetWord.length * 0.4) return true;
+        if (coreUser.includes(coreTargetWord) && coreTargetWord.length >= coreUser.length * 0.4) return true;
       }
       const similarity = calcSimilarity(cleanUser, cleanTarget);
       const threshold = cleanTarget.length > 6 ? 0.55 : 0.70;
@@ -160,17 +168,186 @@ const checkAnswer = (userAnswer: string, target: string, isEnToKo: boolean): boo
 };
 
 // ============================================================
-// 글자 단위 영어 스펠링 비교 (Ko→En, 단어/짧은 구)
+// 문제 텍스트 렌더링 — placeholder/부가설명 회색 처리
 // ============================================================
+const PLACEHOLDER_REGEX = /\[[^\]]*\]|\{[^}]*\}|\bS\s*\+?\s*V\b|동사원형|주제명사|장소|계절|보충\s*설명|예시\s*및\s*추가\s*설명/g;
+
+const splitByRegex = (text: string, regex: RegExp, keyPrefix: string): React.ReactNode[] => {
+  const result: React.ReactNode[] = [];
+  const r = new RegExp(regex.source, regex.flags);
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+  let i = 0;
+  while ((match = r.exec(text)) !== null) {
+    if (match.index > lastIdx) {
+      result.push(<span key={`${keyPrefix}-t${i++}`}>{text.substring(lastIdx, match.index)}</span>);
+    }
+    result.push(
+      <span key={`${keyPrefix}-g${i++}`} className="text-gray-300 font-light">
+        {match[0]}
+      </span>
+    );
+    lastIdx = match.index + match[0].length;
+  }
+  if (lastIdx < text.length) {
+    result.push(<span key={`${keyPrefix}-t${i++}`}>{text.substring(lastIdx)}</span>);
+  }
+  return result;
+};
+
+const renderQuestionText = (text: string, isTemplate: boolean): React.ReactNode => {
+  if (!text) return null;
+  if (!isTemplate) {
+    return <>{splitByRegex(text, /\[[^\]]*\]|\{[^}]*\}/g, 'simple')}</>;
+  }
+  const parts = text.split(/(,\s*)/);
+  let isInExtra = false;
+  const segments: Array<{ text: string; grey: boolean }> = [];
+  parts.forEach((part, idx) => {
+    if (idx % 2 === 1) {
+      segments.push({ text: part, grey: isInExtra });
+      return;
+    }
+    if (idx > 0 && isExtraContextPart(part)) isInExtra = true;
+    segments.push({ text: part, grey: isInExtra });
+  });
+  const nodes: React.ReactNode[] = [];
+  segments.forEach((seg, segIdx) => {
+    if (seg.grey) {
+      nodes.push(
+        <span key={`g${segIdx}`} className="text-gray-300 font-light">
+          {seg.text}
+        </span>
+      );
+      return;
+    }
+    nodes.push(...splitByRegex(seg.text, PLACEHOLDER_REGEX, `seg${segIdx}`));
+  });
+  return <>{nodes}</>;
+};
+
+// ============================================================
+// 단어 정렬 (LCS) + 글자 단위 비교
+// ============================================================
+interface AlignedItem {
+  target?: string;
+  user?: string;
+  type: 'match' | 'wrong' | 'missing' | 'extra';
+}
+
+const normWord = (s: string) => s.toLowerCase().replace(/[^\w가-힣]/g, '');
+const wordsAreEqual = (a: string, b: string): boolean => !!a && !!b && normWord(a) === normWord(b);
+const wordsAreSimilar = (a: string, b: string): boolean => {
+  if (!a || !b) return false;
+  const aN = normWord(a);
+  const bN = normWord(b);
+  if (!aN || !bN) return false;
+  if (aN === bN) return true;
+  return calcSimilarity(aN, bN) >= 0.55;
+};
+
+const alignWords = (target: string[], user: string[]): AlignedItem[] => {
+  const n = target.length;
+  const m = user.length;
+  if (n === 0 && m === 0) return [];
+  if (n === 0) return user.map(u => ({ user: u, type: 'extra' as const }));
+  if (m === 0) return target.map(t => ({ target: t, type: 'missing' as const }));
+
+  // LCS 매트릭스 (similar 기준)
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      if (wordsAreSimilar(target[i - 1], user[j - 1])) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  // 유사 단어가 하나도 없으면 위치 기반 정렬로 폴백 (5열 → 3열로 압축)
+  if (dp[n][m] === 0) {
+    const result: AlignedItem[] = [];
+    const maxLen = Math.max(n, m);
+    for (let k = 0; k < maxLen; k++) {
+      if (k < n && k < m) result.push({ target: target[k], user: user[k], type: 'wrong' });
+      else if (k < n) result.push({ target: target[k], type: 'missing' });
+      else result.push({ user: user[k], type: 'extra' });
+    }
+    return result;
+  }
+
+  // 일반 LCS 역추적
+  const result: AlignedItem[] = [];
+  let i = n, j = m;
+  while (i > 0 && j > 0) {
+    if (wordsAreSimilar(target[i - 1], user[j - 1])) {
+      const type: AlignedItem['type'] = wordsAreEqual(target[i - 1], user[j - 1]) ? 'match' : 'wrong';
+      result.unshift({ target: target[i - 1], user: user[j - 1], type });
+      i--; j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      result.unshift({ target: target[i - 1], type: 'missing' });
+      i--;
+    } else {
+      result.unshift({ user: user[j - 1], type: 'extra' });
+      j--;
+    }
+  }
+  while (i > 0) { result.unshift({ target: target[i - 1], type: 'missing' }); i--; }
+  while (j > 0) { result.unshift({ user: user[j - 1], type: 'extra' }); j--; }
+  return result;
+};
+
+// 칩 내부 글자별 비교 - 일치하면 일반 표시, 불일치 글자에 빨간 밑줄
+const renderCharDiff = (correctWord: string, userWord: string): React.ReactNode => {
+  if (!userWord) {
+    return <span className="text-red-300 opacity-70">___</span>;
+  }
+  const cLower = correctWord.toLowerCase();
+  const uLower = userWord.toLowerCase();
+  return (
+    <>
+      {userWord.split('').map((char, i) => {
+        const cChar = cLower[i];
+        const uChar = uLower[i];
+        const isMatch = cChar !== undefined && cChar === uChar;
+        return (
+          <span
+            key={i}
+            className={
+              isMatch
+                ? ''
+                : 'underline decoration-red-600 decoration-[3px] underline-offset-[3px] font-extrabold'
+            }
+          >
+            {char}
+          </span>
+        );
+      })}
+      {cLower.length > uLower.length && (
+        <span className="text-red-400 opacity-70 ml-0.5">
+          {'·'.repeat(Math.min(cLower.length - uLower.length, 6))}
+        </span>
+      )}
+    </>
+  );
+};
+
+// ============================================================
+// 비교 표시 컴포넌트 — 세 가지
+// ============================================================
+
+// 단어/짧은 구 (1~2단어 정답) — 항상 글자 단위 비교
 const EnglishSpellingDiff = ({ correct, user }: { correct: string; user: string }) => {
   const cLower = correct.toLowerCase();
   const uLower = user.toLowerCase();
   const maxLen = Math.max(cLower.length, uLower.length);
-
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">✓ 정답 스펠링</p>
+        <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">
+          ✓ 정답 스펠링
+        </p>
         <div className="flex justify-center gap-1 flex-wrap px-2">
           {correct.split('').map((char, i) => (
             <span
@@ -183,7 +360,9 @@ const EnglishSpellingDiff = ({ correct, user }: { correct: string; user: string 
         </div>
       </div>
       <div>
-        <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">✗ 내가 적은 답 (틀린 글자 빨강)</p>
+        <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">
+          ✗ 내가 적은 답 (틀린 글자 빨강)
+        </p>
         <div className="flex justify-center gap-1 flex-wrap px-2">
           {Array.from({ length: maxLen }).map((_, i) => {
             const cChar = cLower[i];
@@ -195,9 +374,7 @@ const EnglishSpellingDiff = ({ correct, user }: { correct: string; user: string 
               <span
                 key={i}
                 className={`font-mono inline-block min-w-[24px] text-center text-lg font-bold pb-1 border-b-[3px] rounded-t-sm transition-all ${
-                  isMatch
-                    ? 'text-gray-700 bg-gray-50 border-gray-300'
-                    : 'text-red-600 bg-red-100 border-red-500'
+                  isMatch ? 'text-gray-700 bg-gray-50 border-gray-300' : 'text-red-600 bg-red-100 border-red-500'
                 }`}
               >
                 {display === ' ' ? '·' : display}
@@ -210,50 +387,86 @@ const EnglishSpellingDiff = ({ correct, user }: { correct: string; user: string 
   );
 };
 
-// ============================================================
-// 단어 단위 템플릿 비교 (Ko→En, 긴 문장)
-// ============================================================
+// 템플릿 (3+ 단어 정답) — LCS 단어 정렬 + 칩 내부 글자 밑줄
 const TemplateSpellingDiff = ({ correct, user }: { correct: string; user: string }) => {
   const correctWords = correct.split(/\s+/).filter(Boolean);
   const userWords = user.split(/\s+/).filter(Boolean);
-  const maxLen = Math.max(correctWords.length, userWords.length);
+  const alignment = alignWords(correctWords, userWords);
 
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">✓ 정답 (단어 순)</p>
+        <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">
+          ✓ 정답 (단어 순)
+        </p>
         <div className="flex flex-wrap justify-center gap-1.5">
-          {correctWords.map((w, i) => (
-            <span
-              key={i}
-              className="bg-green-50 text-green-800 px-2.5 py-1 rounded-md text-sm font-mono font-bold border border-green-300"
-            >
-              {w}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div>
-        <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">✗ 내가 적은 답 (다른 단어 빨강)</p>
-        <div className="flex flex-wrap justify-center gap-1.5">
-          {Array.from({ length: maxLen }).map((_, i) => {
-            const cw = correctWords[i]?.toLowerCase().replace(/[^\w가-힣]/g, '');
-            const uw = userWords[i]?.toLowerCase().replace(/[^\w가-힣]/g, '');
-            const isMatch = cw !== undefined && uw !== undefined && cw === uw;
-            const isMissing = userWords[i] === undefined;
-            const display = userWords[i] || '___';
+          {alignment.map((item, i) => {
+            if (item.type === 'extra') {
+              return (
+                <span
+                  key={i}
+                  aria-hidden
+                  className="opacity-0 select-none px-2.5 py-1 text-sm font-mono font-bold border border-transparent"
+                >
+                  {item.user}
+                </span>
+              );
+            }
             return (
               <span
                 key={i}
-                className={`px-2.5 py-1 rounded-md text-sm font-mono font-bold border ${
-                  isMatch
-                    ? 'bg-gray-50 text-gray-700 border-gray-200'
-                    : isMissing
-                    ? 'bg-yellow-50 text-yellow-700 border-yellow-300 border-dashed'
-                    : 'bg-red-100 text-red-700 border-red-400'
-                }`}
+                className="bg-green-50 text-green-800 px-2.5 py-1 rounded-md text-sm font-mono font-bold border border-green-300"
               >
-                {display}
+                {item.target}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">
+          ✗ 내가 적은 답 (틀린 글자에 빨간 밑줄)
+        </p>
+        <div className="flex flex-wrap justify-center gap-1.5">
+          {alignment.map((item, i) => {
+            if (item.type === 'match') {
+              return (
+                <span
+                  key={i}
+                  className="bg-gray-50 text-gray-700 border border-gray-200 px-2.5 py-1 rounded-md text-sm font-mono font-bold"
+                >
+                  {item.user}
+                </span>
+              );
+            }
+            if (item.type === 'missing') {
+              return (
+                <span
+                  key={i}
+                  className="bg-yellow-50 text-yellow-700 border border-yellow-300 border-dashed px-2.5 py-1 rounded-md text-sm font-mono font-bold"
+                >
+                  ___
+                </span>
+              );
+            }
+            if (item.type === 'wrong') {
+              // 정답에는 짝이 있지만 사용자가 틀린 단어 - 글자 단위로 표시
+              return (
+                <span
+                  key={i}
+                  className="bg-red-100 text-red-700 border border-red-400 px-2.5 py-1 rounded-md text-sm font-mono font-bold"
+                >
+                  {renderCharDiff(item.target || '', item.user || '')}
+                </span>
+              );
+            }
+            // 'extra' - 정답에는 없는 잉여 단어
+            return (
+              <span
+                key={i}
+                className="bg-red-100 text-red-700 border border-red-400 px-2.5 py-1 rounded-md text-sm font-mono font-bold line-through decoration-red-500 decoration-2"
+              >
+                {item.user}
               </span>
             );
           })}
@@ -263,13 +476,13 @@ const TemplateSpellingDiff = ({ correct, user }: { correct: string; user: string
   );
 };
 
-// ============================================================
-// 한국어 답변 비교 (En→Ko)
-// ============================================================
+// 한국어 답안 (En→Ko 모드)
 const KoreanAnswerDiff = ({ targets, user }: { targets: string[]; user: string }) => (
   <div className="space-y-3">
     <div>
-      <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">✓ 정답 (모두 인정됨)</p>
+      <p className="text-[10px] text-green-700 font-bold tracking-widest uppercase mb-2 text-center">
+        ✓ 정답 (모두 인정됨)
+      </p>
       <div className="flex flex-wrap justify-center gap-2">
         {targets.map((t, i) => (
           <span
@@ -282,7 +495,9 @@ const KoreanAnswerDiff = ({ targets, user }: { targets: string[]; user: string }
       </div>
     </div>
     <div>
-      <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">✗ 내가 적은 답</p>
+      <p className="text-[10px] text-red-600 font-bold tracking-widest uppercase mb-2 text-center">
+        ✗ 내가 적은 답
+      </p>
       <div className="flex justify-center">
         <div className="bg-red-50 px-5 py-2.5 rounded-lg border border-red-300 inline-block max-w-full">
           <span className="text-base font-medium text-gray-700 line-through decoration-red-500 decoration-[3px] break-words">
@@ -349,9 +564,7 @@ export default function AIWordMaster() {
     }
   }, []);
 
-  // ============================================================
-  // 저장소 헬퍼
-  // ============================================================
+  // ─── 저장소 ─────────────────────────────
   const saveChapters = (newChapters: Chapter[]) => {
     setChapters(newChapters);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newChapters));
@@ -369,11 +582,7 @@ export default function AIWordMaster() {
   };
 
   const getWordDict = (): WordDict => {
-    try {
-      return JSON.parse(localStorage.getItem(DICT_KEY) || '{}');
-    } catch {
-      return {};
-    }
+    try { return JSON.parse(localStorage.getItem(DICT_KEY) || '{}'); } catch { return {}; }
   };
 
   const enrichWithDictionary = (words: Word[]): Word[] => {
@@ -385,18 +594,12 @@ export default function AIWordMaster() {
         const existing = dict[key].ko.split(/,/).map(s => s.trim()).filter(Boolean);
         const incoming = w.ko.split(/,/).map(s => s.trim()).filter(Boolean);
         const merged = Array.from(new Set([...existing, ...incoming])).join(', ');
-        const updated = {
-          ...w,
-          ko: merged,
-          pos: dict[key].pos || w.pos,
-          phonetics: dict[key].phonetics || w.phonetics,
-        };
+        const updated = { ...w, ko: merged, pos: dict[key].pos || w.pos, phonetics: dict[key].phonetics || w.phonetics };
         dict[key] = { ko: merged, pos: updated.pos, phonetics: updated.phonetics };
         return updated;
-      } else {
-        dict[key] = { ko: w.ko, pos: w.pos, phonetics: w.phonetics };
-        return w;
       }
+      dict[key] = { ko: w.ko, pos: w.pos, phonetics: w.phonetics };
+      return w;
     });
     localStorage.setItem(DICT_KEY, JSON.stringify(dict));
     return enriched;
@@ -407,14 +610,11 @@ export default function AIWordMaster() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   };
 
-  // ============================================================
-  // AI 분석
-  // ============================================================
+  // ─── AI 분석 ─────────────────────────────
   const startAnalysis = async () => {
     if (!text.trim()) return alert('내용을 입력해주세요!');
     setLoading(true);
     setAnalyzingProgress(0);
-
     try {
       const lines = text.split('\n');
       const chunkSize = 40;
@@ -423,7 +623,6 @@ export default function AIWordMaster() {
         chunks.push(lines.slice(i, i + chunkSize).join('\n'));
       }
       setTotalChunks(chunks.length);
-
       let allWords: Word[] = [];
       for (let i = 0; i < chunks.length; i++) {
         setAnalyzingProgress(i + 1);
@@ -436,19 +635,14 @@ export default function AIWordMaster() {
         const rawData: Partial<Word>[] = await res.json();
         if (rawData?.length > 0) {
           const dataWithProps = rawData.map(w => ({
-            en: w.en || '',
-            ko: w.ko || '',
-            pos: w.pos || '',
-            phonetics: w.phonetics || '',
+            en: w.en || '', ko: w.ko || '', pos: w.pos || '', phonetics: w.phonetics || '',
             id: Date.now().toString() + Math.random().toString(36).substring(2),
             score: 0,
           }));
           allWords = [...allWords, ...dataWithProps];
         }
       }
-
       const enriched = enrichWithDictionary(allWords);
-
       const seen = new Set<string>();
       const deduped = enriched.filter(w => {
         const k = w.en.toLowerCase().trim();
@@ -456,7 +650,6 @@ export default function AIWordMaster() {
         seen.add(k);
         return true;
       });
-
       if (deduped.length > 0) {
         const newChapter: Chapter = {
           id: Date.now().toString(),
@@ -479,9 +672,7 @@ export default function AIWordMaster() {
     }
   };
 
-  // ============================================================
-  // 게임 로직
-  // ============================================================
+  // ─── 게임 ─────────────────────────────
   const initializeGame = (wordsToPlay: Word[], chapterId: string | null) => {
     const shuffled = [...wordsToPlay].sort(() => Math.random() - 0.5);
     setActiveWords(shuffled);
@@ -520,7 +711,6 @@ export default function AIWordMaster() {
     if (activeWords.length === 0) return;
     const submitted = answer.trim();
     if (!submitted) return;
-
     const current = activeWords[0];
     const target = isEnToKo ? current.ko : current.en;
     const isCorrect = checkAnswer(submitted, target, isEnToKo);
@@ -612,7 +802,6 @@ export default function AIWordMaster() {
     const isAllMastered = completedChapter
       ? completedChapter.words.every(w => (Number(w.score) || 0) >= 2)
       : false;
-
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-gradient-to-br from-yellow-50 via-amber-50 to-blue-50">
         <div className="w-full max-w-md p-10 bg-white rounded-3xl shadow-xl border-2 border-amber-300 text-center">
@@ -625,10 +814,7 @@ export default function AIWordMaster() {
               ? `${completedChapter?.title}의 모든 항목을 마스터했습니다 🎉`
               : '이번 세션의 항목들을 모두 처리했습니다.'}
           </p>
-          <button
-            onClick={quitGame}
-            className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all"
-          >
+          <button onClick={quitGame} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-light tracking-widest hover:bg-gray-800 transition-all">
             보관함으로 가기
           </button>
         </div>
@@ -641,7 +827,6 @@ export default function AIWordMaster() {
   // ============================================================
   if (activeWords.length > 0 && !isAdminMode) {
     const current = activeWords[0];
-
     const remainingPoints = activeWords.reduce((sum, w) => sum + (2 - (Number(w.score) || 0)), 0);
     const pointsEarned = sessionTargetPoints - remainingPoints;
     const progress = sessionTargetPoints > 0 ? (pointsEarned / sessionTargetPoints) * 100 : 0;
@@ -652,8 +837,15 @@ export default function AIWordMaster() {
     const displayRemainingHits = remainingPoints;
 
     const questionText = isEnToKo ? current.en : current.ko;
-    const targetsList = (isEnToKo ? current.ko : current.en).split(/[,/|·]/).map(t => t.trim()).filter(Boolean);
-    const currentIsTemplate = isTemplateText(questionText) || isTemplateText(targetsList[0] || '');
+    const coreAnswer = extractCoreMeaning(isEnToKo ? current.ko : current.en);
+    const targetsList = coreAnswer.split(/[,/|·]/).map(t => t.trim()).filter(Boolean);
+    const primaryTarget = targetsList[0] || (isEnToKo ? current.ko : current.en);
+    const primaryWordCount = primaryTarget.trim().split(/\s+/).filter(Boolean).length;
+
+    // 질문이 길더라도 정답이 짧으면(1-2단어) 글자 단위 비교를 강제
+    const useTemplateDiff = primaryWordCount >= 3;
+    const showTemplateBadge =
+      isTemplateText(questionText) || useTemplateDiff || isTemplatePos(current.pos);
 
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-[#fafafa]">
@@ -665,7 +857,6 @@ export default function AIWordMaster() {
             {streak >= 3 && `🔥 ${streak} Combo!`}
           </div>
 
-          {/* 진척도 대시보드 */}
           <div className="w-full mt-10 mb-6">
             <div className="flex justify-between items-end mb-2">
               <span className="text-[11px] text-gray-500 font-medium tracking-wide">
@@ -676,10 +867,7 @@ export default function AIWordMaster() {
               </span>
             </div>
             <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden relative shadow-inner mb-4">
-              <div
-                className="bg-gray-800 h-full transition-all duration-500 ease-out relative"
-                style={{ width: `${progress}%` }}
-              >
+              <div className="bg-gray-800 h-full transition-all duration-500 ease-out relative" style={{ width: `${progress}%` }}>
                 <div className="absolute top-0 right-0 bottom-0 w-4 bg-white opacity-25 blur-[2px]" />
               </div>
             </div>
@@ -692,7 +880,6 @@ export default function AIWordMaster() {
             </div>
           </div>
 
-          {/* 모드 토글 */}
           <div className="flex w-full max-w-[200px] bg-gray-100 p-1 rounded-xl mb-4">
             <button
               onClick={() => { setIsEnToKo(true); setTimeout(() => inputRef.current?.focus(), 50); }}
@@ -708,11 +895,10 @@ export default function AIWordMaster() {
             </button>
           </div>
 
-          {/* 뱃지 영역 */}
           <div className="h-[24px] mb-2 flex items-center justify-center gap-2">
-            {currentIsTemplate && !feedback && (
+            {showTemplateBadge && !feedback && (
               <span className="px-3 py-1 text-[10px] font-bold text-purple-600 bg-purple-50 rounded-full">
-                📝 템플릿 문장 (단어순 위주 평가)
+                📝 템플릿
               </span>
             )}
             {(Number(current.score) || 0) === 1 && !feedback && (
@@ -722,11 +908,13 @@ export default function AIWordMaster() {
             )}
           </div>
 
-          {/* 문제 출제 */}
-          <h2 className={`font-normal mb-2 text-gray-800 text-center leading-snug break-words ${
-            currentIsTemplate ? 'text-lg px-2' : 'text-3xl'
-          }`}>
-            {questionText}
+          {/* 문제 출제 - placeholder/부가설명 회색 처리 */}
+          <h2
+            className={`font-normal mb-2 text-gray-800 text-center leading-snug break-words ${
+              isTemplateText(questionText) ? 'text-lg px-2' : 'text-3xl'
+            }`}
+          >
+            {renderQuestionText(questionText, isTemplateText(questionText))}
           </h2>
           <p className="text-gray-400 text-sm font-light mb-8">
             {current.phonetics}
@@ -742,25 +930,21 @@ export default function AIWordMaster() {
               </p>
 
               {feedback.isCorrect ? (
-                <p className={`text-gray-900 font-bold mb-2 break-words ${
-                  isTemplateText(feedback.target) ? 'text-base leading-relaxed' : 'text-xl'
-                }`}>
-                  {feedback.target}
+                <p
+                  className={`text-gray-900 font-bold mb-2 break-words ${
+                    isTemplateText(feedback.target) ? 'text-base leading-relaxed' : 'text-xl'
+                  }`}
+                >
+                  {renderQuestionText(feedback.target, isTemplateText(feedback.target))}
                 </p>
               ) : (
                 <div className="mb-6">
                   {isEnToKo ? (
                     <KoreanAnswerDiff targets={targetsList} user={feedback.userAnswer} />
-                  ) : currentIsTemplate ? (
-                    <TemplateSpellingDiff
-                      correct={targetsList[0] || feedback.target}
-                      user={feedback.userAnswer}
-                    />
+                  ) : useTemplateDiff ? (
+                    <TemplateSpellingDiff correct={primaryTarget} user={feedback.userAnswer} />
                   ) : (
-                    <EnglishSpellingDiff
-                      correct={targetsList[0] || feedback.target}
-                      user={feedback.userAnswer}
-                    />
+                    <EnglishSpellingDiff correct={primaryTarget} user={feedback.userAnswer} />
                   )}
                 </div>
               )}
@@ -787,9 +971,9 @@ export default function AIWordMaster() {
             <div className="w-full flex flex-col items-center mt-auto">
               <textarea
                 ref={inputRef}
-                rows={currentIsTemplate ? 3 : 1}
+                rows={useTemplateDiff ? 3 : 1}
                 className={`w-full px-4 py-3 border-b border-gray-100 bg-transparent mb-4 text-center font-light focus:border-gray-800 outline-none transition-colors resize-none overflow-hidden ${
-                  currentIsTemplate ? 'text-base leading-relaxed' : 'text-xl'
+                  useTemplateDiff ? 'text-base leading-relaxed' : 'text-xl'
                 }`}
                 value={answer}
                 onChange={e => setAnswer(e.target.value)}
@@ -800,7 +984,7 @@ export default function AIWordMaster() {
                   }
                 }}
                 placeholder={
-                  currentIsTemplate
+                  useTemplateDiff
                     ? isEnToKo
                       ? '한국어 의미 입력 (단어 위주 평가)'
                       : '영어 템플릿 입력 (Shift+Enter 줄바꿈)'
@@ -859,15 +1043,16 @@ export default function AIWordMaster() {
           </div>
         </div>
 
-        {/* 모드 설명 힌트 */}
-        <div className={`mb-6 px-4 py-2.5 rounded-xl border text-[11px] font-medium tracking-wide ${
-          extractMode === 'phrase'
-            ? 'bg-purple-50 border-purple-200 text-purple-700'
-            : extractMode === 'word'
-            ? 'bg-blue-50 border-blue-200 text-blue-700'
-            : 'bg-amber-50 border-amber-200 text-amber-700'
-        }`}>
-          {extractMode === 'phrase' && '📝 문장 모드: "This photo might have been taken in"처럼 템플릿 문장을 통째로 추출합니다.'}
+        <div
+          className={`mb-6 px-4 py-2.5 rounded-xl border text-[11px] font-medium tracking-wide ${
+            extractMode === 'phrase'
+              ? 'bg-purple-50 border-purple-200 text-purple-700'
+              : extractMode === 'word'
+              ? 'bg-blue-50 border-blue-200 text-blue-700'
+              : 'bg-amber-50 border-amber-200 text-amber-700'
+          }`}
+        >
+          {extractMode === 'phrase' && '📝 문장 모드: "This photo might have been taken in" 같은 템플릿 문장을 통째로 추출합니다.'}
           {extractMode === 'word' && '🔤 단어 모드: 단어 단위로 추출하고 동의어를 풍부하게 보강합니다.'}
           {extractMode === 'both' && '🎯 복합 모드: 단어와 템플릿 문장을 동시에 추출합니다.'}
         </div>
@@ -928,9 +1113,7 @@ export default function AIWordMaster() {
                       : 'bg-white border-gray-100 hover:border-gray-300'
                   }`}
                 >
-                  {isPerfect && (
-                    <div className="absolute top-2 right-2 text-2xl animate-pulse">🏆</div>
-                  )}
+                  {isPerfect && <div className="absolute top-2 right-2 text-2xl animate-pulse">🏆</div>}
                   <div className="flex justify-between items-start">
                     <div className="flex-1 mr-4">
                       <p className={`text-[10px] font-medium mb-1 ${isPerfect ? 'text-amber-600' : 'text-gray-300'}`}>
