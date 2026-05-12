@@ -27,6 +27,33 @@ const buildSystemPrompt = (mode: string) => {
 - "pos" 필드: 품사 또는 유형 (Noun, Verb, Adjective, Adverb, Phrase, Expression, Template)
 - "phonetics" 필드: 발음기호 (없으면 빈 문자열)
 - 반환: { "words": [ {...}, ... ] }
+
+[★★★ ko 필드 작성의 절대 규칙 ★★★]
+"ko" 필드에는 **"en" 표현의 직접 번역(direct translation)만** 들어가야 합니다.
+다음을 절대 포함하지 마세요:
+- 주변 문맥/설명 문장
+- 다음 줄에 이어지는 별개 표현의 한국어 의미
+- 사용 예시 설명
+- 부가 정보
+
+각 영어 표현은 **독립된 항목**으로 분리하세요. 두 표현이 한 문장에 같이 있어도 각각 별개 항목으로 추출합니다.
+
+[★ 나쁜 예시 (절대 이렇게 하지 마세요)]
+입력: "In addition, [내용] could be another efficient method in order to V."
+❌ 잘못된 추출:
+{ "en": "In addition", "ko": "게다가, ~하기 위한 또 다른 효율적인 방법이 될 수 있다" }
+   → "In addition"의 ko에 뒷부분 설명까지 들어감.
+
+[★ 좋은 예시 - 분리해서 두 개의 항목으로 추출]
+{ "en": "In addition", "ko": "게다가, 또한, 추가로" },
+{ "en": "could be another efficient method in order to V", "ko": "~하기 위한 또 다른 효율적인 방법이 될 수 있다" }
+
+[또 다른 좋은 예시]
+입력: "Therefore, in weighing the merits of [A] against [B], I find that [내 의견]."
+✓ 올바른 추출:
+{ "en": "Therefore", "ko": "따라서, 그러므로, 그래서" },
+{ "en": "in weighing the merits of [A] against [B], I find that [내 의견]", 
+  "ko": "[A]와 [B]의 장점을 비교해 볼 때, 나는 [내 의견]이라고 생각한다" }
 `;
 
   if (mode === 'word') {
@@ -36,11 +63,13 @@ const buildSystemPrompt = (mode: string) => {
 
 [다중 의미 보장 ★★★]
 모든 단어는 반드시 **2~4개 이상의 한국어 동의어**를 콤마로 구분해 반환하세요.
+단, 동의어는 모두 그 단어의 직접 번역이어야 합니다. (부가설명 금지!)
+
 예시:
-- "seek" → "추구하다, 찾다, 원하다, 모색하다"
-- "positivity" → "긍정성, 긍정적 성향, 낙관"
-- "subtle" → "미묘한, 은근한, 섬세한, 교묘한"
-- "overwhelm" → "압도하다, 휩싸다, 제압하다, 벅차게 하다"
+- "seek" → "추구하다, 찾다, 원하다, 모색하다" ✓ (모두 직접 번역)
+- "positivity" → "긍정성, 긍정적 성향, 낙관" ✓
+- "subtle" → "미묘한, 은근한, 섬세한, 교묘한" ✓
+- "seek" → "추구하다, 어떤 목표를 향해 끊임없이 노력하다" ❌ (두 번째는 설명문)
 `;
   }
 
@@ -64,34 +93,25 @@ const buildSystemPrompt = (mode: string) => {
    입력: "It is interesting to note(알아차리다) that S+V"
    → { "en": "It is interesting to note that S+V", "ko": "~을 주목할 만하다, ~을 알아차리는 점이 흥미롭다" }
 
-(C) **에세이/스피킹 단골 표현 (한국어 뜻이 명시 안 되어도 추출)**
+(C) **에세이/스피킹 단골 표현**
    - "Over the past few years," → "지난 몇 년간, 최근 몇 년 동안"
    - "based on the fact that S V" → "~사실에 근거하여, ~을 토대로"
-   - "in order to + 동사원형" → "~하기 위해서"
-   - "It is clearly shown in the picture that S+V" → "그림에 분명히 나타나 있다"
-   - "To conclude, given the reasons discussed above" → "위에서 논의한 이유에 비추어 결론적으로"
-   - "I am inclined to believe that" → "~라고 믿는 경향이 있다"
-   - "While some people may assert that [주장]" → "어떤 사람들은 ~라고 주장할 수 있다"
+   - "In addition," → "게다가, 또한"
    - "Most importantly," → "무엇보다 중요한 것은"
-   - "Undoubtedly, it is undeniable that" → "의심할 여지없이 ~이다"
-   - "To sum up," / "To summarize," → "요약하자면"
+   - "To conclude, given the reasons discussed above," → "위에서 논의한 이유에 비추어 결론적으로"
 
 (D) **Placeholder 보존 - 시험용 자리표시자는 그대로 유지**
    S+V, S V, [주제], [내 의견], 동사원형, ~을, ~에서, [형용사] 같은 placeholder는 영어/한국어 양쪽에서 절대 빼지 말고 그대로 보존하세요.
-   학습자가 자리 표시자를 보고 맥락을 익힙니다.
 
-(E) **앞뒤 연결사도 chunk 안에 포함**
-   "leading to heated debates" / "fostering appreciation for" 같은 분사구문도 한 덩어리로 잡으세요.
+[ko 필드 길이 제한 - 매우 중요]
+- 짧은 표현("In addition", "Most importantly,")의 ko는 직접 번역 2-3개로만 (전체 30자 이내)
+- 긴 템플릿("This photo might have been taken in")의 ko도 직접 번역만, 주변 문맥 추가 금지
+- ko가 en보다 비정상적으로 길어지면 잘못된 것 - 분리해서 새 항목으로 만드세요.
 
 [금지 사항]
 - 템플릿을 "It", "is", "interesting", "to", "note" 같은 단어 단위로 절대 쪼개지 마세요.
-- 단순한 1-2단어 표현은 가능하면 주변 단어와 합쳐서 더 큰 chunk로 묶어주세요. (단, 의미가 살아있는 선에서)
+- 짧은 1-2단어 표현은 가능하면 주변 단어와 합쳐서 더 큰 chunk로 묶어주세요.
 - pos는 "Expression" 또는 "Template"으로 통일하세요.
-
-[ko 필드 작성 규칙]
-- 입력에 한국어 뜻이 명시되어 있으면 그것을 첫 번째로 우선 사용
-- 추가로 자연스러운 동의 표현 1-2개를 콤마로 덧붙이세요
-- 핵심 의미를 살린 자연스러운 한국어로
 `;
   }
 
@@ -101,15 +121,15 @@ const buildSystemPrompt = (mode: string) => {
 단어와 템플릿 문장을 모두 추출하되, 각각 자기 형식을 지키세요.
 
 [단어 (Noun/Verb/Adjective 등)]
-- 반드시 2~4개 이상의 한국어 동의어를 콤마로 구분
+- 반드시 2~4개 이상의 한국어 동의어를 콤마로 구분 (모두 직접 번역만)
 - 예: "seek" → "추구하다, 찾다, 원하다, 모색하다"
 
 [템플릿 문장 (Expression/Template)]
 - "(영어) (한국어)" 패턴이나 학습용 모범 문장이 보이면 chunk 단위로 통째로 추출
 - 절대 단어 단위로 쪼개지 마세요
+- ko에 주변 문맥 포함 금지 - 직접 번역만
 - placeholder(S+V, [주제], 동사원형 등)는 보존
-- 예: "This photo might have been taken in" → "~에서 찍혔을지도 모릅니다"
-- 예: "Over the past few years" → "지난 몇 년간"
+- 예: "This photo might have been taken in" → "~에서 찍혔을지도 모릅니다, ~에서 촬영된 것 같다"
 
 [pos 구분]
 - 단어: Noun, Verb, Adjective, Adverb
